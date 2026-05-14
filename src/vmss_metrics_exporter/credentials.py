@@ -1,4 +1,4 @@
-"""Resilient Azure credential chain with Workload Identity → Managed Identity fallback.
+"""Resilient Azure credential chain with explicit Kubernetes auth-mode selection.
 
 Background
 ----------
@@ -21,14 +21,20 @@ failed.
 
 This module provides `ResilientAzureCredential`, which:
 
-1. Tries `WorkloadIdentityCredential` first (explicit) so a *hard* auth error from WI
+1. Honors `VMSS_METRICS_AUTH_MODE` so Kubernetes deployment YAML can explicitly choose
+    `workload_identity`, `service_principal`, or `auto`.
+2. Uses Service Principal auth first in `auto` mode when the full SP environment is
+    present (`AZURE_CLIENT_ID` + `AZURE_TENANT_ID` + `AZURE_CLIENT_SECRET`). This makes
+    a Kubernetes Secret-provided SP deterministic even when the AKS Workload Identity
+    webhook also injects WI env vars.
+3. Otherwise tries `WorkloadIdentityCredential` first (explicit) so a hard auth error from WI
    can be caught and the chain can continue.
-2. Falls back to `DefaultAzureCredential` (with WI excluded and `managed_identity_client_id`
-   pinned to `$AZURE_CLIENT_ID`). DAC already contains Managed Identity, environment,
-   Azure CLI, PowerShell, etc., so a separate explicit `ManagedIdentityCredential`
-   step is unnecessary. We construct DAC with the WI trigger env var temporarily
-   cleared so its inner MI credential targets **IMDS**, not the WI shortcut.
-3. Caches the first credential that succeeds so subsequent token requests reuse it
+4. Falls back to `DefaultAzureCredential` (with WI excluded and `managed_identity_client_id`
+    pinned to `$AZURE_CLIENT_ID`). DAC contains Managed Identity, Azure CLI,
+    PowerShell, etc., so a separate explicit `ManagedIdentityCredential` step is
+    unnecessary. We construct DAC with the WI trigger env var temporarily cleared so
+    its inner MI credential targets **IMDS**, not the WI shortcut.
+5. Caches the first credential that succeeds so subsequent token requests reuse it
    without re-running the chain.
 """
 
@@ -51,11 +57,37 @@ from azure.identity import (
 
 LOGGER = logging.getLogger(__name__)
 
+_AUTH_MODE_ENV_VAR = "VMSS_METRICS_AUTH_MODE"
+_AUTH_MODE_AUTO = "auto"
+_AUTH_MODE_SERVICE_PRINCIPAL = "service_principal"
+_AUTH_MODE_WORKLOAD_IDENTITY = "workload_identity"
+_SUPPORTED_AUTH_MODES = {
+    _AUTH_MODE_AUTO,
+    _AUTH_MODE_SERVICE_PRINCIPAL,
+    _AUTH_MODE_WORKLOAD_IDENTITY,
+}
+
 _WORKLOAD_IDENTITY_ENV_VARS = (
     "AZURE_CLIENT_ID",
     "AZURE_TENANT_ID",
     "AZURE_FEDERATED_TOKEN_FILE",
 )
+_SERVICE_PRINCIPAL_ENV_VARS = (
+    "AZURE_CLIENT_ID",
+    "AZURE_TENANT_ID",
+    "AZURE_CLIENT_SECRET",
+)
+_SP_ONLY_DAC_EXCLUDE_KWARGS = {
+    "exclude_workload_identity_credential": True,
+    "exclude_managed_identity_credential": True,
+    "exclude_shared_token_cache_credential": True,
+    "exclude_visual_studio_code_credential": True,
+    "exclude_cli_credential": True,
+    "exclude_developer_cli_credential": True,
+    "exclude_powershell_credential": True,
+    "exclude_interactive_browser_credential": True,
+    "exclude_broker_credential": True,
+}
 # Env vars that make Managed Identity short-circuit into the Workload Identity
 # token-exchange flow. We clear these while constructing DefaultAzureCredential so
 # that DAC's inner ManagedIdentityCredential targets IMDS, not WI.
@@ -63,12 +95,14 @@ _MI_TO_WI_TRIGGER_ENV_VARS = ("AZURE_FEDERATED_TOKEN_FILE",)
 
 
 class ResilientAzureCredential:
-    """Token credential that falls back from Workload Identity to Managed Identity.
+    """Token credential that prefers SP, then falls back through WI and DAC-backed auth.
 
     The standard `DefaultAzureCredential` / `ChainedTokenCredential` only falls through
     on `CredentialUnavailableError`. This implementation catches *any* exception from
     a credential and tries the next one, then surfaces a single combined error if every
-    credential fails.
+    credential fails. A complete Service Principal environment intentionally overrides
+    AKS Workload Identity. The fallback DAC step supports Managed Identity and developer
+    credentials in the normal azure-identity order.
     """
 
     def __init__(self, *, scopes_for_probe: tuple[str, ...] | None = None) -> None:
@@ -139,21 +173,55 @@ class ResilientAzureCredential:
 def _build_credential_chain() -> list[tuple[str, Any]]:
     """Build the ordered list of credentials to try.
 
-    The chain is intentionally short:
+    The chain is intentionally short and deterministic:
 
-    * **workload-identity** — explicit, only when the WI env vars are present. Having
-      this step explicit (instead of letting `DefaultAzureCredential` host it) is what
-      allows `ResilientAzureCredential` to catch its hard auth errors and continue.
-    * **default-azure-credential** — handles everything else: Managed Identity via
-      IMDS (with the WI shortcut suppressed), env vars, Azure CLI, PowerShell,
-      VS Code, etc. The `managed_identity_client_id` is pinned to `$AZURE_CLIENT_ID`
-      so MI targets the same identity that backs WI, if that identity is also
-      attached to the node VMSS.
+    * **service-principal** — explicit override when `AZURE_CLIENT_ID`,
+      `AZURE_TENANT_ID`, and `AZURE_CLIENT_SECRET` are all present. This uses DAC
+            with only `EnvironmentCredential` enabled, so AKS-injected WI env vars cannot win.
+    * **workload-identity** — explicit, only when the WI env vars are present and SP
+      is not complete. Having this step explicit (instead of letting
+      `DefaultAzureCredential` host it) is what allows `ResilientAzureCredential` to
+      catch its hard auth errors and continue.
+    * **default-azure-credential** — handles everything else in the standard DAC order
+      with workload identity excluded: Managed Identity via IMDS (with the WI shortcut
+      suppressed), Azure CLI, PowerShell, VS Code, etc. The `managed_identity_client_id`
+      is pinned to `$AZURE_CLIENT_ID` so MI targets the same identity that backs WI, if
+      that identity is also attached to the node VMSS.
     """
 
     chain: list[tuple[str, Any]] = []
+    auth_mode = _requested_auth_mode()
     client_id = os.getenv("AZURE_CLIENT_ID")
+    has_service_principal_env = all(os.getenv(name) for name in _SERVICE_PRINCIPAL_ENV_VARS)
     has_workload_identity_env = all(os.getenv(name) for name in _WORKLOAD_IDENTITY_ENV_VARS)
+
+    if auth_mode == _AUTH_MODE_SERVICE_PRINCIPAL or (
+        auth_mode == _AUTH_MODE_AUTO and has_service_principal_env
+    ):
+        if not has_service_principal_env:
+            missing = ", ".join(_missing_env_vars(_SERVICE_PRINCIPAL_ENV_VARS))
+            raise RuntimeError(
+                f"{_AUTH_MODE_ENV_VAR}=service_principal requires these env vars: {missing}"
+            )
+        try:
+            chain.append(
+                (
+                    "service-principal",
+                    DefaultAzureCredential(**_SP_ONLY_DAC_EXCLUDE_KWARGS),
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning(
+                "Service Principal DefaultAzureCredential could not be constructed: %s",
+                _summarize_error(exc),
+            )
+        return chain
+
+    if auth_mode == _AUTH_MODE_WORKLOAD_IDENTITY and not has_workload_identity_env:
+        missing = ", ".join(_missing_env_vars(_WORKLOAD_IDENTITY_ENV_VARS))
+        raise RuntimeError(
+            f"{_AUTH_MODE_ENV_VAR}=workload_identity requires these env vars: {missing}"
+        )
 
     if has_workload_identity_env:
         try:
@@ -169,6 +237,10 @@ def _build_credential_chain() -> list[tuple[str, Any]]:
         )
 
     dac_kwargs: dict[str, Any] = {"exclude_workload_identity_credential": True}
+    if auth_mode == _AUTH_MODE_WORKLOAD_IDENTITY:
+        # The user explicitly selected WI, so don't let a mounted SP secret win later
+        # inside DAC if WI fails. DAC still provides MI/developer fallback.
+        dac_kwargs["exclude_environment_credential"] = True
     if client_id:
         dac_kwargs["managed_identity_client_id"] = client_id
     try:
@@ -180,6 +252,24 @@ def _build_credential_chain() -> list[tuple[str, Any]]:
         )
 
     return chain
+
+
+def _requested_auth_mode() -> str:
+    """Return the normalized auth mode requested by deployment configuration."""
+
+    value = os.getenv(_AUTH_MODE_ENV_VAR, _AUTH_MODE_AUTO).strip().lower().replace("-", "_")
+    if value not in _SUPPORTED_AUTH_MODES:
+        supported = ", ".join(sorted(_SUPPORTED_AUTH_MODES))
+        raise ValueError(
+            f"Unsupported {_AUTH_MODE_ENV_VAR}={value!r}; expected one of: {supported}"
+        )
+    return value
+
+
+def _missing_env_vars(names: tuple[str, ...]) -> list[str]:
+    """Return names that are unset or empty."""
+
+    return [name for name in names if not os.getenv(name)]
 
 
 def _summarize_error(exc: BaseException) -> str:

@@ -21,7 +21,7 @@ class VmssCount:
 
     @property
     def label_values(self) -> tuple[str, str, str, str, str]:
-        """Return labels in the same order used by `azure_vmss_instance_count` and `azure_vmss_capacity`."""
+        """Return labels for `azure_vmss_instance_count` and `azure_vmss_capacity`."""
 
         return (
             self.subscription_id,

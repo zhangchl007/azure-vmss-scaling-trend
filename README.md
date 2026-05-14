@@ -81,6 +81,7 @@ The exporter reads configuration from environment variables (and optionally a lo
 | `HOST` | `0.0.0.0` | Bind host for the HTTP server. |
 | `PORT` | `8000` | Bind port for `/metrics`. |
 | `LOG_LEVEL` | `INFO` | Python logging level. |
+| `VMSS_METRICS_AUTH_MODE` | `auto` | Auth selection: `auto`, `workload_identity`, or `service_principal`. In Kubernetes, set this in the Deployment manifest. |
 | `ARG_PAGE_SIZE` | _(library default)_ | Optional Resource Graph page size. |
 | `ARG_MAX_RETRIES` | _(library default)_ | Optional retry count for transient errors. |
 | `ARG_RETRY_BASE_DELAY_SECONDS` | _(library default)_ | Optional retry backoff base. |
@@ -88,16 +89,36 @@ The exporter reads configuration from environment variables (and optionally a lo
 Authentication uses a resilient credential chain implemented in
 [`src/vmss_metrics_exporter/credentials.py`](src/vmss_metrics_exporter/credentials.py):
 
-1. **Workload Identity** — tried first when the AKS webhook has injected the
+1. **Service Principal** — used when `VMSS_METRICS_AUTH_MODE=service_principal`, or
+  in `auto` mode when `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, and
+  `AZURE_CLIENT_SECRET` are all set. This is deterministic for Kubernetes
+  deployments that intentionally mount an SP secret, even if the AKS Workload
+  Identity webhook also injects WI environment variables.
+2. **Workload Identity** — used when `VMSS_METRICS_AUTH_MODE=workload_identity`, or
+  in `auto` mode when SP is not fully configured and the AKS webhook has injected the
    `AZURE_CLIENT_ID` / `AZURE_TENANT_ID` / `AZURE_FEDERATED_TOKEN_FILE` env vars.
    This step is constructed explicitly (not via `DefaultAzureCredential`) so the
    resilient wrapper can catch its hard auth errors and continue.
-2. **`DefaultAzureCredential`** with workload-identity excluded — covers everything
-   else: Managed Identity via IMDS (using `AZURE_CLIENT_ID` if set), environment
-   variables, Azure CLI, PowerShell, VS Code, etc. During construction the
-   `AZURE_FEDERATED_TOKEN_FILE` env var is temporarily cleared so its internal
-   `ManagedIdentityCredential` uses IMDS instead of silently reusing the broken WI
-   token-exchange shortcut.
+3. **`DefaultAzureCredential`** with workload-identity excluded — covers everything
+   else in the normal azure-identity order: Managed Identity via IMDS (using
+   `AZURE_CLIENT_ID` if set), Azure CLI, PowerShell, VS Code, etc. During
+   construction the `AZURE_FEDERATED_TOKEN_FILE` env var is temporarily cleared so
+   its internal `ManagedIdentityCredential` uses IMDS instead of silently reusing the
+   broken WI token-exchange shortcut.
+
+Supported authentication modes:
+
+| Scenario | Required environment/configuration | Notes |
+| --- | --- | --- |
+| Service Principal | `VMSS_METRICS_AUTH_MODE=service_principal` plus `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_CLIENT_SECRET` | Uses `DefaultAzureCredential` with only `EnvironmentCredential` enabled. Good for local dev, CI, non-AKS deployments, or Kubernetes deployments that mount an SP Secret. |
+| AKS Workload Identity | `VMSS_METRICS_AUTH_MODE=workload_identity` plus `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_FEDERATED_TOKEN_FILE` injected by the webhook | Preferred for AKS. Tried first so the exporter can log and cache WI success. |
+| Auto | `VMSS_METRICS_AUTH_MODE=auto` or unset | SP wins when complete SP env vars exist; otherwise WI is used when webhook env vars exist; otherwise DAC fallback is used. |
+| Managed Identity | IMDS available; optionally `AZURE_CLIENT_ID` for user-assigned MI | In AKS fallback scenarios, the identity must be attached to the node VMSS for IMDS to issue tokens. |
+| Developer credentials | Azure CLI, Azure PowerShell, VS Code, etc. | Useful for local interactive runs when SP env vars are not set. |
+
+> In AKS, prefer setting `VMSS_METRICS_AUTH_MODE` in `deploy/kubernetes.yaml`. If you
+> choose `service_principal`, provide `AZURE_CLIENT_SECRET` through a Kubernetes Secret
+> or external secret provider — do not hardcode it in a manifest.
 
 Unlike a plain `DefaultAzureCredential` / `ChainedTokenCredential`, this chain
 **continues on hard authentication failures** (for example AADSTS700211 federated-
@@ -128,6 +149,12 @@ az login
 az account set --subscription <subscription-id>
 
 export AZURE_SUBSCRIPTION_IDS=<subscription-id-1>,<subscription-id-2>
+
+# Optional non-interactive Service Principal auth instead of Azure CLI.
+# If all three are set, SP auth takes precedence over AKS Workload Identity.
+# export AZURE_CLIENT_ID=<app-or-managed-identity-client-id>
+# export AZURE_TENANT_ID=<tenant-id>
+# export AZURE_CLIENT_SECRET=<service-principal-secret>
 
 # One-shot inventory summary (no HTTP server):
 vmss-metrics-exporter --once
@@ -176,6 +203,10 @@ The sample [deploy/kubernetes.yaml](deploy/kubernetes.yaml) creates:
 - `Service` `vmss-metrics-exporter` exposing port `8000` (port name `metrics`)
 
 Pod environment is set to a default subscription ID; update it for your environment before applying.
+It also sets `VMSS_METRICS_AUTH_MODE=workload_identity` by default. To use Service
+Principal auth instead, create a Kubernetes Secret with `AZURE_CLIENT_ID`,
+`AZURE_TENANT_ID`, and `AZURE_CLIENT_SECRET`, change `VMSS_METRICS_AUTH_MODE` to
+`service_principal`, and uncomment the SP `secretKeyRef` env entries in the manifest.
 
 ### 1. Enable Workload Identity on the AKS cluster
 
