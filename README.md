@@ -90,10 +90,14 @@ Authentication uses a resilient credential chain implemented in
 
 1. **Workload Identity** — tried first when the AKS webhook has injected the
    `AZURE_CLIENT_ID` / `AZURE_TENANT_ID` / `AZURE_FEDERATED_TOKEN_FILE` env vars.
-2. **Managed Identity (user-assigned)** — via IMDS, using `AZURE_CLIENT_ID` if set.
-3. **Managed Identity (system-assigned)** — via IMDS.
-4. **`DefaultAzureCredential`** with WI/MI disabled — for local development (Azure CLI,
-   environment variables, etc.).
+   This step is constructed explicitly (not via `DefaultAzureCredential`) so the
+   resilient wrapper can catch its hard auth errors and continue.
+2. **`DefaultAzureCredential`** with workload-identity excluded — covers everything
+   else: Managed Identity via IMDS (using `AZURE_CLIENT_ID` if set), environment
+   variables, Azure CLI, PowerShell, VS Code, etc. During construction the
+   `AZURE_FEDERATED_TOKEN_FILE` env var is temporarily cleared so its internal
+   `ManagedIdentityCredential` uses IMDS instead of silently reusing the broken WI
+   token-exchange shortcut.
 
 Unlike a plain `DefaultAzureCredential` / `ChainedTokenCredential`, this chain
 **continues on hard authentication failures** (for example AADSTS700211 federated-

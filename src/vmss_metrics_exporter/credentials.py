@@ -14,15 +14,21 @@ WI auth fails it never falls back to `ManagedIdentityCredential` — even though
 kubelet/user-assigned identity attached to the underlying VMSS could have served the
 token via IMDS.
 
+To make matters worse, modern `azure-identity`'s `ManagedIdentityCredential` itself
+silently reuses the Workload Identity token-exchange flow whenever the WI env vars are
+present. That means even if you swap in MI explicitly, it fails for the same reason WI
+failed.
+
 This module provides `ResilientAzureCredential`, which:
 
-1. Tries `WorkloadIdentityCredential` first when WI env vars are present.
-2. On any failure (including hard auth errors), falls back to
-   `ManagedIdentityCredential` — user-assigned via `AZURE_CLIENT_ID` if set, then
-   system-assigned.
-3. Falls back to `DefaultAzureCredential` (with WI/MI explicitly disabled) for local
-   development (Azure CLI, environment, etc.).
-4. Caches the first credential that succeeds so subsequent token requests reuse it
+1. Tries `WorkloadIdentityCredential` first (explicit) so a *hard* auth error from WI
+   can be caught and the chain can continue.
+2. Falls back to `DefaultAzureCredential` (with WI excluded and `managed_identity_client_id`
+   pinned to `$AZURE_CLIENT_ID`). DAC already contains Managed Identity, environment,
+   Azure CLI, PowerShell, etc., so a separate explicit `ManagedIdentityCredential`
+   step is unnecessary. We construct DAC with the WI trigger env var temporarily
+   cleared so its inner MI credential targets **IMDS**, not the WI shortcut.
+3. Caches the first credential that succeeds so subsequent token requests reuse it
    without re-running the chain.
 """
 
@@ -40,7 +46,6 @@ from azure.core.exceptions import ClientAuthenticationError
 from azure.identity import (
     CredentialUnavailableError,
     DefaultAzureCredential,
-    ManagedIdentityCredential,
     WorkloadIdentityCredential,
 )
 
@@ -51,9 +56,9 @@ _WORKLOAD_IDENTITY_ENV_VARS = (
     "AZURE_TENANT_ID",
     "AZURE_FEDERATED_TOKEN_FILE",
 )
-# Env vars that make `ManagedIdentityCredential` short-circuit into the Workload
-# Identity token-exchange flow. We need to clear these while constructing MI so the
-# fallback actually targets IMDS.
+# Env vars that make Managed Identity short-circuit into the Workload Identity
+# token-exchange flow. We clear these while constructing DefaultAzureCredential so
+# that DAC's inner ManagedIdentityCredential targets IMDS, not WI.
 _MI_TO_WI_TRIGGER_ENV_VARS = ("AZURE_FEDERATED_TOKEN_FILE",)
 
 
@@ -132,7 +137,19 @@ class ResilientAzureCredential:
 
 
 def _build_credential_chain() -> list[tuple[str, Any]]:
-    """Build the ordered list of credentials to try."""
+    """Build the ordered list of credentials to try.
+
+    The chain is intentionally short:
+
+    * **workload-identity** — explicit, only when the WI env vars are present. Having
+      this step explicit (instead of letting `DefaultAzureCredential` host it) is what
+      allows `ResilientAzureCredential` to catch its hard auth errors and continue.
+    * **default-azure-credential** — handles everything else: Managed Identity via
+      IMDS (with the WI shortcut suppressed), env vars, Azure CLI, PowerShell,
+      VS Code, etc. The `managed_identity_client_id` is pinned to `$AZURE_CLIENT_ID`
+      so MI targets the same identity that backs WI, if that identity is also
+      attached to the node VMSS.
+    """
 
     chain: list[tuple[str, Any]] = []
     client_id = os.getenv("AZURE_CLIENT_ID")
@@ -143,49 +160,20 @@ def _build_credential_chain() -> list[tuple[str, Any]]:
             chain.append(("workload-identity", WorkloadIdentityCredential()))
         except Exception as exc:  # noqa: BLE001 - construction itself may raise on bad config.
             LOGGER.warning(
-                "WorkloadIdentityCredential could not be constructed: %s", _summarize_error(exc)
+                "WorkloadIdentityCredential could not be constructed: %s",
+                _summarize_error(exc),
             )
     else:
         LOGGER.debug(
             "Workload Identity env vars not all present; skipping WorkloadIdentityCredential."
         )
 
+    dac_kwargs: dict[str, Any] = {"exclude_workload_identity_credential": True}
     if client_id:
-        try:
-            with _force_imds_managed_identity():
-                cred = ManagedIdentityCredential(client_id=client_id)
-            chain.append(
-                (
-                    f"managed-identity(client_id={_short_uuid(client_id)})",
-                    cred,
-                )
-            )
-        except Exception as exc:  # noqa: BLE001
-            LOGGER.warning(
-                "User-assigned ManagedIdentityCredential could not be constructed: %s",
-                _summarize_error(exc),
-            )
-
+        dac_kwargs["managed_identity_client_id"] = client_id
     try:
         with _force_imds_managed_identity():
-            cred = ManagedIdentityCredential()
-        chain.append(("managed-identity(system-assigned)", cred))
-    except Exception as exc:  # noqa: BLE001
-        LOGGER.warning(
-            "System-assigned ManagedIdentityCredential could not be constructed: %s",
-            _summarize_error(exc),
-        )
-
-    try:
-        chain.append(
-            (
-                "default-azure-credential",
-                DefaultAzureCredential(
-                    exclude_workload_identity_credential=True,
-                    exclude_managed_identity_credential=True,
-                ),
-            )
-        )
+            chain.append(("default-azure-credential", DefaultAzureCredential(**dac_kwargs)))
     except Exception as exc:  # noqa: BLE001
         LOGGER.warning(
             "DefaultAzureCredential could not be constructed: %s", _summarize_error(exc)
@@ -199,12 +187,6 @@ def _summarize_error(exc: BaseException) -> str:
 
     message = str(exc).strip().splitlines()[0] if str(exc).strip() else exc.__class__.__name__
     return f"{exc.__class__.__name__}: {message[:240]}"
-
-
-def _short_uuid(value: str) -> str:
-    """Shorten a UUID for logs while keeping the prefix recognizable."""
-
-    return f"{value[:8]}…" if len(value) > 8 else value
 
 
 @contextmanager

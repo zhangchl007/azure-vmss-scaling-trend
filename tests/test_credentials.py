@@ -154,9 +154,8 @@ def test_chain_skips_workload_identity_when_env_missing(
     chain = creds_module._build_credential_chain()
     names = [name for name, _ in chain]
     assert not any(name.startswith("workload-identity") for name in names)
-    # Managed Identity (system-assigned) and DefaultAzureCredential are always added.
-    assert any(name.startswith("managed-identity(system-assigned)") for name in names)
-    assert "default-azure-credential" in names
+    # DefaultAzureCredential is always present and now hosts Managed Identity internally.
+    assert names == ["default-azure-credential"]
 
 
 def test_chain_includes_workload_identity_when_env_present(
@@ -168,9 +167,8 @@ def test_chain_includes_workload_identity_when_env_present(
 
     chain = creds_module._build_credential_chain()
     names = [name for name, _ in chain]
-    assert names[0] == "workload-identity"
-    # User-assigned MI is included because AZURE_CLIENT_ID is set.
-    assert any(name.startswith("managed-identity(client_id=") for name in names)
+    # Workload identity is explicit so the resilient wrapper can catch its hard auth errors.
+    assert names == ["workload-identity", "default-azure-credential"]
 
 
 def test_force_imds_managed_identity_clears_then_restores_token_file(
