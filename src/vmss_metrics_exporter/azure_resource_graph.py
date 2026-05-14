@@ -24,6 +24,8 @@ Resources
     location,
     orchestrationMode = tostring(properties.orchestrationMode),
     capacity = toint(sku.capacity),
+    vmSize = tostring(sku.name),
+    skuTier = tostring(sku.tier),
     rgKey,
     vmssKey
 | join kind=leftouter (
@@ -51,6 +53,8 @@ Resources
     vmssName,
     location,
     orchestrationMode,
+    vmSize,
+    skuTier,
     actualInstanceCount,
     capacity
 | order by subscriptionId asc, resourceGroup asc, vmssName asc
@@ -201,6 +205,8 @@ def normalize_vmss_count_row(row: Mapping[str, Any]) -> VmssCount:
         vmss_name=_required_str(row, "vmssName"),
         location=_optional_str(row, "location", default="unknown"),
         orchestration_mode=_optional_str(row, "orchestrationMode", default="unknown"),
+        vm_size=_optional_str(row, "vmSize", default="unknown"),
+        sku_tier=_optional_str(row, "skuTier", default="unknown"),
         actual_instance_count=_int_value(row.get("actualInstanceCount"), default=0),
         capacity=_int_value(row.get("capacity"), default=0),
     )
@@ -243,7 +249,7 @@ def summarize_counts(counts: Iterable[VmssCount]) -> str:
     """Create a compact human-readable summary for one-shot runs."""
 
     lines = [
-        "subscription_id\tresource_group\tvmss_name\tlocation\torchestration_mode\tactual\tcapacity"
+        "subscription_id\tresource_group\tvmss_name\tlocation\torchestration_mode\tvm_size\tsku_tier\tactual\tcapacity"
     ]
     for item in counts:
         lines.append(
@@ -254,6 +260,8 @@ def summarize_counts(counts: Iterable[VmssCount]) -> str:
                     item.vmss_name,
                     item.location,
                     item.orchestration_mode,
+                    item.vm_size,
+                    item.sku_tier,
                     str(item.actual_instance_count),
                     str(item.capacity),
                 ]

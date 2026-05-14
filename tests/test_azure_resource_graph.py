@@ -33,6 +33,8 @@ class FakeResourceGraphClient:
                     "vmssName": "vmss-a",
                     "location": "eastus",
                     "orchestrationMode": "Uniform",
+                    "vmSize": "Standard_D2s_v3",
+                    "skuTier": "Standard",
                     "actualInstanceCount": 3,
                     "capacity": 5,
                 }
@@ -64,6 +66,8 @@ def test_normalize_vmss_count_row() -> None:
             "vmssName": "vmss-a",
             "location": "eastus",
             "orchestrationMode": "Flexible",
+            "vmSize": "Standard_D4s_v5",
+            "skuTier": "Standard",
             "actualInstanceCount": "2",
             "capacity": "4",
         }
@@ -72,7 +76,31 @@ def test_normalize_vmss_count_row() -> None:
     assert count.subscription_id == "sub-a"
     assert count.actual_instance_count == 2
     assert count.capacity == 4
+    assert count.vm_size == "Standard_D4s_v5"
+    assert count.sku_tier == "Standard"
     assert count.label_values == ("sub-a", "rg-a", "vmss-a", "eastus", "Flexible")
+    assert count.info_label_values == (
+        "sub-a",
+        "rg-a",
+        "vmss-a",
+        "eastus",
+        "Flexible",
+        "Standard_D4s_v5",
+        "Standard",
+    )
+
+
+def test_normalize_vmss_count_row_defaults_when_sku_missing() -> None:
+    count = normalize_vmss_count_row(
+        {
+            "subscriptionId": "sub-a",
+            "resourceGroup": "rg-a",
+            "vmssName": "vmss-a",
+        }
+    )
+
+    assert count.vm_size == "unknown"
+    assert count.sku_tier == "unknown"
 
 
 def test_vmss_counts_query_avoids_unsupported_let_statements() -> None:
@@ -80,6 +108,8 @@ def test_vmss_counts_query_avoids_unsupported_let_statements() -> None:
     assert "ComputeResources" in VMSS_COUNTS_QUERY
     assert "microsoft.compute/virtualmachinescalesets/virtualmachines" in VMSS_COUNTS_QUERY
     assert "microsoft.compute/virtualmachines'" in VMSS_COUNTS_QUERY
+    assert "vmSize = tostring(sku.name)" in VMSS_COUNTS_QUERY
+    assert "skuTier = tostring(sku.tier)" in VMSS_COUNTS_QUERY
 
 
 def test_parse_vmss_parent_from_child_id() -> None:
@@ -139,6 +169,8 @@ def test_summarize_counts_contains_tabular_output() -> None:
             "vmssName": "vmss-a",
             "location": "eastus",
             "orchestrationMode": "Uniform",
+            "vmSize": "Standard_DS2_v2",
+            "skuTier": "Standard",
             "actualInstanceCount": 1,
             "capacity": 1,
         }
@@ -147,4 +179,7 @@ def test_summarize_counts_contains_tabular_output() -> None:
     summary = summarize_counts([row])
 
     assert "subscription_id" in summary
+    assert "vm_size" in summary
+    assert "sku_tier" in summary
     assert "vmss-a" in summary
+    assert "Standard_DS2_v2" in summary

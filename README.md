@@ -31,6 +31,7 @@ Azure Monitor does not provide a simple native subscription-wide metric for "VMS
 | --- | --- | --- |
 | `azure_vmss_instance_count` | Gauge | Actual VMSS child virtual-machine count observed in Resource Graph. |
 | `azure_vmss_capacity` | Gauge | Desired VMSS capacity from the parent VMSS `sku.capacity`. |
+| `azure_vmss_info` | Gauge (info) | Static VMSS metadata. Value is always `1`. Labels include `vm_size` (`sku.name`) and `sku_tier` (`sku.tier`). Join with `* on (subscription_id, resource_group, vmss_name) group_left(vm_size, sku_tier)` to enrich the count metrics. |
 | `azure_vmss_exporter_last_success_timestamp_seconds` | Gauge | Unix timestamp of the last successful collection. |
 | `azure_vmss_exporter_collection_duration_seconds` | Gauge | Duration of the most recent collection attempt. |
 | `azure_vmss_exporter_collection_errors_total` | Counter | Total collection errors observed by this process. |
@@ -43,6 +44,19 @@ Labels on `azure_vmss_instance_count` and `azure_vmss_capacity`:
 - `vmss_name`
 - `location`
 - `orchestration_mode` (`Uniform` / `Flexible`)
+
+Labels on `azure_vmss_info` (all five above, **plus**):
+
+- `vm_size` — the VMSS SKU name (e.g. `Standard_D4s_v3`, `Standard_D96s_v6`). For Flexible scale sets that mix sizes, this reflects the VMSS-level `sku.name` (often `Mix` or empty → reported as `unknown`).
+- `sku_tier` — the VMSS SKU tier (typically `Standard`).
+
+The info-metric pattern keeps `vm_size` *out of the count gauge labelsets*, so resizing a VMSS does not break the historical time series of `azure_vmss_instance_count` / `azure_vmss_capacity`. Example PromQL to show instance counts with VM size:
+
+```promql
+azure_vmss_instance_count
+  * on (subscription_id, resource_group, vmss_name) group_left(vm_size, sku_tier)
+    azure_vmss_info
+```
 
 ## Why Azure Resource Graph
 
@@ -302,6 +316,18 @@ azure_vmss_capacity != azure_vmss_instance_count
 
 # Instances by region
 sum by (subscription_id, location) (azure_vmss_instance_count)
+
+# Instance count enriched with VM size and SKU tier
+azure_vmss_instance_count
+  * on (subscription_id, resource_group, vmss_name) group_left(vm_size, sku_tier)
+    azure_vmss_info
+
+# Instances grouped by VM size
+sum by (vm_size) (
+  azure_vmss_instance_count
+    * on (subscription_id, resource_group, vmss_name) group_left(vm_size)
+      azure_vmss_info
+)
 
 # Exporter freshness
 time() - azure_vmss_exporter_last_success_timestamp_seconds

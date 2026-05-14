@@ -23,6 +23,16 @@ VMSS_LABELS = (
     "orchestration_mode",
 )
 
+VMSS_INFO_LABELS = (
+    "subscription_id",
+    "resource_group",
+    "vmss_name",
+    "location",
+    "orchestration_mode",
+    "vm_size",
+    "sku_tier",
+)
+
 
 class VmssMetricsExporter:
     """Poll Azure and update Prometheus gauges with cached VMSS counts."""
@@ -40,6 +50,7 @@ class VmssMetricsExporter:
         self._thread: threading.Thread | None = None
         self._metric_lock = threading.Lock()
         self._active_labelsets: set[tuple[str, str, str, str, str]] = set()
+        self._active_info_labelsets: set[tuple[str, str, str, str, str, str, str]] = set()
 
         effective_registry = registry if registry is not None else REGISTRY
 
@@ -53,6 +64,16 @@ class VmssMetricsExporter:
             "azure_vmss_capacity",
             "Desired Azure VM Scale Set capacity from the parent VMSS resource sku.capacity.",
             VMSS_LABELS,
+            registry=effective_registry,
+        )
+        self.info = Gauge(
+            "azure_vmss_info",
+            (
+                "Static metadata about each VM Scale Set (vm_size from sku.name, "
+                "sku_tier from sku.tier). The value is always 1; join via "
+                "`* on (subscription_id, resource_group, vmss_name) group_left(vm_size, sku_tier)`."
+            ),
+            VMSS_INFO_LABELS,
             registry=effective_registry,
         )
         self.last_success_timestamp = Gauge(
@@ -122,14 +143,19 @@ class VmssMetricsExporter:
 
     def _update_metrics(self, counts: Sequence[VmssCount]) -> None:
         new_labelsets = {count.label_values for count in counts}
+        new_info_labelsets = {count.info_label_values for count in counts}
         with self._metric_lock:
             for stale in self._active_labelsets - new_labelsets:
                 self.instance_count.remove(*stale)
                 self.capacity.remove(*stale)
+            for stale_info in self._active_info_labelsets - new_info_labelsets:
+                self.info.remove(*stale_info)
 
             for count in counts:
                 labels = count.label_values
                 self.instance_count.labels(*labels).set(count.actual_instance_count)
                 self.capacity.labels(*labels).set(count.capacity)
+                self.info.labels(*count.info_label_values).set(1)
 
             self._active_labelsets = new_labelsets
+            self._active_info_labelsets = new_info_labelsets

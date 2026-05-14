@@ -87,7 +87,7 @@
       "gridPos": {"h": 4, "w": 4, "x": 4, "y": 1},
       "targets": [
         {
-          "expr": "sum(azure_vmss_instance_count{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", vmss_name=~\"$vmss_name\", location=~\"$location\"})",
+          "expr": "sum(\n  max by (subscription_id, resource_group, vmss_name, location, orchestration_mode) (\n    azure_vmss_instance_count{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", vmss_name=~\"$vmss_name\", location=~\"$location\"}\n  )\n)",
           "legendFormat": "instances",
           "refId": "A"
         }
@@ -119,7 +119,7 @@
       "gridPos": {"h": 4, "w": 4, "x": 8, "y": 1},
       "targets": [
         {
-          "expr": "sum(azure_vmss_capacity{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", vmss_name=~\"$vmss_name\", location=~\"$location\"})",
+          "expr": "sum(\n  max by (subscription_id, resource_group, vmss_name, location, orchestration_mode) (\n    azure_vmss_capacity{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", vmss_name=~\"$vmss_name\", location=~\"$location\"}\n  )\n)",
           "legendFormat": "capacity",
           "refId": "A"
         }
@@ -151,7 +151,7 @@
       "gridPos": {"h": 4, "w": 4, "x": 12, "y": 1},
       "targets": [
         {
-          "expr": "count(\n  (azure_vmss_capacity{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", vmss_name=~\"$vmss_name\", location=~\"$location\"}\n   - on (subscription_id, resource_group, vmss_name, location, orchestration_mode)\n     azure_vmss_instance_count{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", vmss_name=~\"$vmss_name\", location=~\"$location\"})\n  != 0\n) or vector(0)",
+          "expr": "count(\n  (\n    max by (subscription_id, resource_group, vmss_name, location, orchestration_mode) (\n      azure_vmss_capacity{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", vmss_name=~\"$vmss_name\", location=~\"$location\"}\n    )\n    - on (subscription_id, resource_group, vmss_name, location, orchestration_mode)\n      max by (subscription_id, resource_group, vmss_name, location, orchestration_mode) (\n        azure_vmss_instance_count{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", vmss_name=~\"$vmss_name\", location=~\"$location\"}\n      )\n  )\n  != 0\n) or vector(0)",
           "legendFormat": "diverging",
           "refId": "A"
         }
@@ -276,7 +276,7 @@
       "gridPos": {"h": 10, "w": 24, "x": 0, "y": 6},
       "targets": [
         {
-          "expr": "azure_vmss_instance_count{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", vmss_name=~\"$vmss_name\", location=~\"$location\"}",
+          "expr": "max by (subscription_id, resource_group, vmss_name, location, orchestration_mode) (\n  azure_vmss_instance_count{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", vmss_name=~\"$vmss_name\", location=~\"$location\"}\n)",
           "legendFormat": "{{vmss_name}}",
           "refId": "A"
         }
@@ -321,7 +321,7 @@
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
       "targets": [
         {
-          "expr": "sum by (subscription_id) (azure_vmss_instance_count{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", vmss_name=~\"$vmss_name\", location=~\"$location\"})",
+          "expr": "sum by (subscription_id) (\n  max by (subscription_id, resource_group, vmss_name, location, orchestration_mode) (\n    azure_vmss_instance_count{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", vmss_name=~\"$vmss_name\", location=~\"$location\"}\n  )\n)",
           "legendFormat": "{{subscription_id}}",
           "refId": "A"
         }
@@ -358,7 +358,7 @@
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
       "targets": [
         {
-          "expr": "sum by (location) (azure_vmss_instance_count{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", vmss_name=~\"$vmss_name\", location=~\"$location\"})",
+          "expr": "sum by (location) (\n  max by (subscription_id, resource_group, vmss_name, location, orchestration_mode) (\n    azure_vmss_instance_count{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", vmss_name=~\"$vmss_name\", location=~\"$location\"}\n  )\n)",
           "legendFormat": "{{location}}",
           "refId": "A"
         }
@@ -403,7 +403,7 @@
       "gridPos": {"h": 12, "w": 12, "x": 0, "y": 25},
       "targets": [
         {
-          "expr": "azure_vmss_instance_count{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", vmss_name=~\"$vmss_name\", location=~\"$location\"}",
+          "expr": "max by (subscription_id, resource_group, vmss_name, location, orchestration_mode) (\n  azure_vmss_instance_count{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", vmss_name=~\"$vmss_name\", location=~\"$location\"}\n)",
           "legendFormat": "{{vmss_name}}",
           "refId": "A",
           "instant": false
@@ -439,19 +439,19 @@
       "type": "table",
       "id": 11,
       "title": "VMSS inventory (latest)",
-      "description": "Current VMSS view with desired capacity, actual instances, and drift.",
+      "description": "Current VMSS view with VM size, desired capacity, actual instances, and drift.",
       "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
       "gridPos": {"h": 12, "w": 12, "x": 12, "y": 25},
       "targets": [
         {
-          "expr": "azure_vmss_instance_count{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", vmss_name=~\"$vmss_name\", location=~\"$location\"}",
+          "expr": "max by (subscription_id, resource_group, vmss_name, location, orchestration_mode) (\n  azure_vmss_instance_count{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", vmss_name=~\"$vmss_name\", location=~\"$location\"}\n)\n* on (subscription_id, resource_group, vmss_name, location, orchestration_mode) group_left(vm_size)\nmax by (subscription_id, resource_group, vmss_name, location, orchestration_mode, vm_size) (\n  azure_vmss_info{job=\"$job\"}\n)",
           "legendFormat": "__auto",
           "refId": "A",
           "format": "table",
           "instant": true
         },
         {
-          "expr": "azure_vmss_capacity{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", vmss_name=~\"$vmss_name\", location=~\"$location\"}",
+          "expr": "max by (subscription_id, resource_group, vmss_name, location, orchestration_mode) (\n  azure_vmss_capacity{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", vmss_name=~\"$vmss_name\", location=~\"$location\"}\n)\n* on (subscription_id, resource_group, vmss_name, location, orchestration_mode) group_left(vm_size)\nmax by (subscription_id, resource_group, vmss_name, location, orchestration_mode, vm_size) (\n  azure_vmss_info{job=\"$job\"}\n)",
           "legendFormat": "__auto",
           "refId": "B",
           "format": "table",
@@ -481,10 +481,11 @@
               "subscription_id": 0,
               "resource_group": 1,
               "vmss_name": 2,
-              "location": 3,
-              "orchestration_mode": 4,
-              "Value #A": 5,
-              "Value #B": 6
+              "vm_size": 3,
+              "location": 4,
+              "orchestration_mode": 5,
+              "Value #A": 6,
+              "Value #B": 7
             },
             "renameByName": {
               "Value #A": "instances",
@@ -492,6 +493,7 @@
               "subscription_id": "subscription",
               "resource_group": "resource group",
               "vmss_name": "vmss",
+              "vm_size": "vm size",
               "location": "region",
               "orchestration_mode": "mode"
             }
@@ -581,12 +583,12 @@
           "gridPos": {"h": 10, "w": 24, "x": 0, "y": 38},
           "targets": [
             {
-              "expr": "azure_vmss_capacity{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", vmss_name=~\"$vmss_name\", location=~\"$location\"}",
+              "expr": "max by (subscription_id, resource_group, vmss_name, location, orchestration_mode) (\n  azure_vmss_capacity{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", vmss_name=~\"$vmss_name\", location=~\"$location\"}\n)",
               "legendFormat": "{{vmss_name}} capacity",
               "refId": "A"
             },
             {
-              "expr": "azure_vmss_instance_count{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", vmss_name=~\"$vmss_name\", location=~\"$location\"}",
+              "expr": "max by (subscription_id, resource_group, vmss_name, location, orchestration_mode) (\n  azure_vmss_instance_count{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", vmss_name=~\"$vmss_name\", location=~\"$location\"}\n)",
               "legendFormat": "{{vmss_name}} actual",
               "refId": "B"
             }
