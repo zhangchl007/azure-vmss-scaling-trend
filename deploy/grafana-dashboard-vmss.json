@@ -270,14 +270,14 @@
     {
       "type": "timeseries",
       "id": 7,
-      "title": "VMSS instance count trend (per VMSS)",
-      "description": "Actual VM instance count over time, one series per VMSS. Legend includes resource group so VMSS with identical names across clusters or with identical values remain distinguishable.",
+      "title": "VMSS instance count trend (per VMSS, non-zero)",
+      "description": "TRUE line chart: Y axis = actual VM instance count. Each VMSS is one colored line. Two VMSS with identical instance counts overlap at the same Y position by design (this is the truth — they have the same value). Use the colored legend on the right to identify every VMSS, and refer to the State Timeline panel on the right (or below) for an unambiguous per-VMSS row view. Filter `> 0` hides VMSS that currently have zero instances.",
       "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 6},
+      "gridPos": {"h": 10, "w": 14, "x": 0, "y": 6},
       "targets": [
         {
-          "expr": "max by (subscription_id, resource_group, vmss_name, location, orchestration_mode) (\n  azure_vmss_instance_count{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", vmss_name=~\"$vmss_name\", location=~\"$location\"}\n)",
-          "legendFormat": "{{vmss_name}} · {{resource_group}} · {{location}}",
+          "expr": "max by (subscription_id, resource_group, vmss_name, location, orchestration_mode) (\n  azure_vmss_instance_count{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", vmss_name=~\"$vmss_name\", location=~\"$location\"}\n) > 0",
+          "legendFormat": "{{vmss_name}} · {{resource_group}}",
           "refId": "A"
         }
       ],
@@ -286,14 +286,15 @@
           "custom": {
             "drawStyle": "line",
             "lineInterpolation": "stepAfter",
-            "lineWidth": 1,
-            "fillOpacity": 10,
+            "lineWidth": 3,
+            "fillOpacity": 0,
             "showPoints": "always",
-            "pointSize": 4,
+            "pointSize": 8,
             "spanNulls": true,
             "stacking": {"mode": "none", "group": "A"},
             "axisPlacement": "auto",
             "axisLabel": "instances",
+            "axisSoftMin": 0,
             "scaleDistribution": {"type": "linear"}
           },
           "color": {"mode": "palette-classic"},
@@ -311,6 +312,55 @@
           "calcs": ["lastNotNull", "min", "max", "mean"]
         },
         "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "type": "state-timeline",
+      "id": 13,
+      "title": "Per-VMSS instance count timeline",
+      "description": "One horizontal row per VMSS. Color encodes the instance count at each time bucket. Zero geometric overlap by construction: every VMSS — even those sharing identical counts in the trend chart on the left — gets its own dedicated row, so all VMSS are always visible regardless of their value.",
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "gridPos": {"h": 10, "w": 10, "x": 14, "y": 6},
+      "targets": [
+        {
+          "expr": "max by (subscription_id, resource_group, vmss_name, location, orchestration_mode) (\n  azure_vmss_instance_count{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", vmss_name=~\"$vmss_name\", location=~\"$location\"}\n) > 0",
+          "legendFormat": "{{vmss_name}} · {{resource_group}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "transparent", "value": null},
+              {"color": "blue", "value": 1},
+              {"color": "green", "value": 2},
+              {"color": "yellow", "value": 4},
+              {"color": "orange", "value": 8},
+              {"color": "red", "value": 16}
+            ]
+          },
+          "custom": {
+            "lineWidth": 0,
+            "fillOpacity": 80
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "mergeValues": true,
+        "showValue": "auto",
+        "alignValue": "left",
+        "rowHeight": 0.9,
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
+        },
+        "tooltip": {"mode": "single", "sort": "none"}
       }
     },
     {
