@@ -1,0 +1,45 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "vmss-metrics-exporter"
+version = "0.1.0"
+description = "Prometheus exporter for Azure VM Scale Set instance counts collected through Azure Resource Graph."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+  { name = "VMSS Metrics Maintainers" }
+]
+dependencies = [
+  "azure-identity>=1.16.0",
+  "azure-mgmt-resourcegraph>=8.0.0",
+  "prometheus-client>=0.20.0",
+  "python-dotenv>=1.0.1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.2.0",
+  "ruff>=0.4.4",
+]
+
+[project.scripts]
+vmss-metrics-exporter = "vmss_metrics_exporter.main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/vmss_metrics_exporter"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
