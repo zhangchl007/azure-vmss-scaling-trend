@@ -28,7 +28,7 @@ spec:
       serviceAccountName: workidentity-sa
       containers:
         - name: exporter
-          image: zhangchl007/vmss-metrics-exporter:v1
+          image: zhangchl007/vmss-metrics-exporter:v5
           imagePullPolicy: IfNotPresent
           ports:
             - name: metrics

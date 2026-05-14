@@ -156,17 +156,26 @@ def _is_retryable_exception(exc: Exception) -> bool:
 
 
 def create_resource_graph_client() -> ResourceGraphClientProtocol:
-    """Create an authenticated Azure Resource Graph client using DefaultAzureCredential."""
+    """Create an authenticated Azure Resource Graph client.
+
+    Uses :class:`~vmss_metrics_exporter.credentials.ResilientAzureCredential`, which
+    falls back from Workload Identity to Managed Identity (and finally to
+    `DefaultAzureCredential`) on hard authentication failures. The stock
+    `DefaultAzureCredential` does not fall back through real auth errors, so this
+    wrapper is required to keep the exporter alive when Workload Identity is
+    misconfigured.
+    """
 
     try:
-        from azure.identity import DefaultAzureCredential
         from azure.mgmt.resourcegraph import ResourceGraphClient
+
+        from .credentials import create_credential
     except ImportError as exc:  # pragma: no cover - exercised only when dependencies are missing.
         raise RuntimeError(
             "Azure SDK packages are not installed. Install the project dependencies first."
         ) from exc
 
-    return ResourceGraphClient(DefaultAzureCredential())
+    return ResourceGraphClient(create_credential())
 
 
 def build_query_request(

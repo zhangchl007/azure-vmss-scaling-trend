@@ -85,7 +85,28 @@ The exporter reads configuration from environment variables (and optionally a lo
 | `ARG_MAX_RETRIES` | _(library default)_ | Optional retry count for transient errors. |
 | `ARG_RETRY_BASE_DELAY_SECONDS` | _(library default)_ | Optional retry backoff base. |
 
-Authentication uses [`DefaultAzureCredential`](https://learn.microsoft.com/azure/developer/python/sdk/authentication-overview), so the same binary works locally (Azure CLI / environment) and in AKS with Workload Identity (federated token file).
+Authentication uses a resilient credential chain implemented in
+[`src/vmss_metrics_exporter/credentials.py`](src/vmss_metrics_exporter/credentials.py):
+
+1. **Workload Identity** — tried first when the AKS webhook has injected the
+   `AZURE_CLIENT_ID` / `AZURE_TENANT_ID` / `AZURE_FEDERATED_TOKEN_FILE` env vars.
+2. **Managed Identity (user-assigned)** — via IMDS, using `AZURE_CLIENT_ID` if set.
+3. **Managed Identity (system-assigned)** — via IMDS.
+4. **`DefaultAzureCredential`** with WI/MI disabled — for local development (Azure CLI,
+   environment variables, etc.).
+
+Unlike a plain `DefaultAzureCredential` / `ChainedTokenCredential`, this chain
+**continues on hard authentication failures** (for example AADSTS700211 federated-
+credential mismatch, AADSTS53003 conditional-access block, or a missing token file)
+rather than aborting after the first credential errors. The first credential that
+returns a token is cached for subsequent calls. If it later starts failing, the chain
+is automatically re-walked.
+
+> **Note for the MI fallback to actually succeed**: the user-assigned managed identity
+> referenced by `AZURE_CLIENT_ID` must also be assigned to the **AKS node VMSS** so
+> IMDS can vend a token for it (`az vmss identity assign --identities <MI_ID> …`).
+> Workload Identity alone — without the identity attached to the VMSS — only works
+> through the federated-token flow.
 
 ## Local quick start
 
