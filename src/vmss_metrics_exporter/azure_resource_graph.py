@@ -148,6 +148,18 @@ class AzureResourceGraphVmssCollector:
 def _is_retryable_exception(exc: Exception) -> bool:
     """Return whether an Azure SDK exception is likely transient."""
 
+    # Authentication failures from our credential layer are not transient. Retrying
+    # them just wastes time and floods logs.
+    try:
+        from azure.core.exceptions import ClientAuthenticationError
+        from azure.identity import CredentialUnavailableError
+    except ImportError:  # pragma: no cover - azure deps required at runtime.
+        auth_error_types: tuple[type[BaseException], ...] = ()
+    else:
+        auth_error_types = (ClientAuthenticationError, CredentialUnavailableError)
+    if auth_error_types and isinstance(exc, auth_error_types):
+        return False
+
     response = getattr(exc, "response", None)
     status_code = getattr(response, "status_code", None) or getattr(exc, "status_code", None)
     if status_code is None:

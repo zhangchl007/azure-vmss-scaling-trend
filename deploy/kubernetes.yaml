@@ -13,7 +13,6 @@ metadata:
   namespace: default
   labels:
     app.kubernetes.io/name: vmss-metrics-exporter
-    azure.workload.identity/use: "true"
 spec:
   replicas: 1
   selector:
@@ -23,12 +22,11 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: vmss-metrics-exporter
-        azure.workload.identity/use: "true"
     spec:
-      serviceAccountName: workidentity-sa
+      serviceAccountName: default
       containers:
         - name: exporter
-          image: zhangchl007/vmss-metrics-exporter:v5
+          image: zhangchl007/vmss-metrics-exporter:v7
           imagePullPolicy: IfNotPresent
           ports:
             - name: metrics
@@ -36,32 +34,46 @@ spec:
           env:
             - name: AZURE_SUBSCRIPTION_IDS
               value: "f3814144-0548-467b-8edd-5c4777b44d10"
-            # Choose authentication mode for Kubernetes deployments:
-            # - workload_identity: use AKS Workload Identity webhook injection (default here)
-            # - service_principal: use AZURE_CLIENT_ID/TENANT_ID/CLIENT_SECRET below
-            # - auto: use SP when all SP env vars exist; otherwise WI/DAC fallback
+            # Choose authentication mode. Supported values:
+            #   workload_identity  - use AKS Workload Identity webhook injection
+            #   service_principal  - use AZURE_CLIENT_ID/TENANT_ID/CLIENT_SECRET from Secret (active)
+            #   auto               - SP if SP env complete, else WI, else DAC fallback
             - name: VMSS_METRICS_AUTH_MODE
-              value: "workload_identity"
-            # To use Service Principal instead of Workload Identity:
-            # 1. Create a Secret named vmss-metrics-exporter-sp with keys:
-            #    AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_CLIENT_SECRET
-            # 2. Change VMSS_METRICS_AUTH_MODE to "service_principal"
-            # 3. Uncomment the three env entries below.
-            # - name: AZURE_CLIENT_ID
-            #   valueFrom:
-            #     secretKeyRef:
-            #       name: vmss-metrics-exporter-sp
-            #       key: AZURE_CLIENT_ID
-            # - name: AZURE_TENANT_ID
-            #   valueFrom:
-            #     secretKeyRef:
-            #       name: vmss-metrics-exporter-sp
-            #       key: AZURE_TENANT_ID
-            # - name: AZURE_CLIENT_SECRET
-            #   valueFrom:
-            #     secretKeyRef:
-            #       name: vmss-metrics-exporter-sp
-            #       key: AZURE_CLIENT_SECRET
+              value: "service_principal"
+            # ------------------------------------------------------------------
+            # Service Principal credentials sourced from Kubernetes Secret
+            # `vmss-metrics-exporter-sp` (keys: AZURE_TENANT_ID, AZURE_CLIENT_ID,
+            # AZURE_CLIENT_SECRET). Create the Secret with:
+            #   kubectl create secret generic vmss-metrics-exporter-sp \
+            #     --from-literal=AZURE_TENANT_ID=... \
+            #     --from-literal=AZURE_CLIENT_ID=... \
+            #     --from-literal=AZURE_CLIENT_SECRET=...
+            # ------------------------------------------------------------------
+            - name: AZURE_TENANT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: vmss-metrics-exporter-sp
+                  key: AZURE_TENANT_ID
+            - name: AZURE_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: vmss-metrics-exporter-sp
+                  key: AZURE_CLIENT_ID
+            - name: AZURE_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: vmss-metrics-exporter-sp
+                  key: AZURE_CLIENT_SECRET
+            # ------------------------------------------------------------------
+            # To switch back to Workload Identity:
+            #   1. Restore ServiceAccount `workidentity-sa` (annotated with the WI
+            #      federated client-id) at the top of this manifest.
+            #   2. Set `serviceAccountName: workidentity-sa` above.
+            #   3. Add label `azure.workload.identity/use: "true"` to both the
+            #      Deployment metadata.labels and spec.template.metadata.labels.
+            #   4. Set VMSS_METRICS_AUTH_MODE above to "workload_identity".
+            #   5. Remove the three AZURE_* secretKeyRef env entries above.
+            # ------------------------------------------------------------------
             - name: POLL_INTERVAL_SECONDS
               value: "300"
             - name: PORT

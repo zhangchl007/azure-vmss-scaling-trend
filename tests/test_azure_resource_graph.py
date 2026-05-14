@@ -161,6 +161,40 @@ def test_collector_does_not_retry_bad_request(monkeypatch: pytest.MonkeyPatch) -
     assert client.calls == 1
 
 
+class _FakeAuthFailureClient:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def resources(self, _query: object) -> object:
+        from azure.core.exceptions import ClientAuthenticationError
+
+        self.calls += 1
+        raise ClientAuthenticationError("AADSTS700211: no federated identity match")
+
+
+def test_collector_does_not_retry_authentication_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Auth failures from the credential layer must not be retried."""
+
+    from azure.core.exceptions import ClientAuthenticationError
+
+    monkeypatch.setattr(
+        "vmss_metrics_exporter.azure_resource_graph.build_query_request",
+        lambda **kwargs: kwargs,
+    )
+    client = _FakeAuthFailureClient()
+    collector = AzureResourceGraphVmssCollector(
+        client,
+        ["sub-a"],
+        max_retries=3,
+        retry_base_delay_seconds=0,
+    )
+
+    with pytest.raises(ClientAuthenticationError):
+        collector.collect()
+
+    assert client.calls == 1
+
+
 def test_summarize_counts_contains_tabular_output() -> None:
     row = normalize_vmss_count_row(
         {

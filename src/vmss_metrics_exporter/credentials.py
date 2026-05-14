@@ -211,6 +211,9 @@ def _build_credential_chain() -> list[tuple[str, Any]]:
                 )
             )
         except Exception as exc:  # noqa: BLE001
+            if auth_mode == _AUTH_MODE_SERVICE_PRINCIPAL:
+                # User explicitly selected SP; do not silently mask the failure.
+                raise
             LOGGER.warning(
                 "Service Principal DefaultAzureCredential could not be constructed: %s",
                 _summarize_error(exc),
@@ -227,6 +230,9 @@ def _build_credential_chain() -> list[tuple[str, Any]]:
         try:
             chain.append(("workload-identity", WorkloadIdentityCredential()))
         except Exception as exc:  # noqa: BLE001 - construction itself may raise on bad config.
+            if auth_mode == _AUTH_MODE_WORKLOAD_IDENTITY:
+                # User explicitly selected WI; do not silently fall back.
+                raise
             LOGGER.warning(
                 "WorkloadIdentityCredential could not be constructed: %s",
                 _summarize_error(exc),

@@ -267,6 +267,71 @@ def test_invalid_auth_mode_fails_fast(monkeypatch: pytest.MonkeyPatch) -> None:
         creds_module._build_credential_chain()
 
 
+def test_service_principal_mode_surfaces_construction_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Explicit SP mode must not swallow the real error and report 'no credentials'."""
+
+    class _BoomCredential:
+        def __init__(self, **_kwargs: object) -> None:
+            raise RuntimeError("boom-sp")
+
+    monkeypatch.setattr(creds_module, "DefaultAzureCredential", _BoomCredential)
+    monkeypatch.setenv("VMSS_METRICS_AUTH_MODE", "service_principal")
+    monkeypatch.setenv("AZURE_CLIENT_ID", "11111111-2222-3333-4444-555555555555")
+    monkeypatch.setenv("AZURE_TENANT_ID", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+    monkeypatch.setenv("AZURE_CLIENT_SECRET", "fake-secret")
+
+    with pytest.raises(RuntimeError, match="boom-sp"):
+        creds_module._build_credential_chain()
+
+
+def test_workload_identity_mode_surfaces_construction_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Explicit WI mode must not silently fall back to MI/CLI when WI ctor raises."""
+
+    class _BoomWorkloadIdentity:
+        def __init__(self, **_kwargs: object) -> None:
+            raise RuntimeError("boom-wi")
+
+    monkeypatch.setattr(creds_module, "WorkloadIdentityCredential", _BoomWorkloadIdentity)
+    monkeypatch.setenv("VMSS_METRICS_AUTH_MODE", "workload_identity")
+    monkeypatch.setenv("AZURE_CLIENT_ID", "11111111-2222-3333-4444-555555555555")
+    monkeypatch.setenv("AZURE_TENANT_ID", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+    monkeypatch.setenv("AZURE_FEDERATED_TOKEN_FILE", "/var/run/secrets/azure/tokens/token")
+    monkeypatch.delenv("AZURE_CLIENT_SECRET", raising=False)
+
+    with pytest.raises(RuntimeError, match="boom-wi"):
+        creds_module._build_credential_chain()
+
+
+def test_auto_mode_workload_identity_construction_failure_falls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """In auto mode, WI construction failure may still log and fall back to DAC."""
+
+    class _BoomWorkloadIdentity:
+        def __init__(self, **_kwargs: object) -> None:
+            raise RuntimeError("boom-wi-auto")
+
+    class _FakeDefaultAzureCredential:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+    monkeypatch.setattr(creds_module, "WorkloadIdentityCredential", _BoomWorkloadIdentity)
+    monkeypatch.setattr(creds_module, "DefaultAzureCredential", _FakeDefaultAzureCredential)
+    monkeypatch.setenv("AZURE_CLIENT_ID", "11111111-2222-3333-4444-555555555555")
+    monkeypatch.setenv("AZURE_TENANT_ID", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+    monkeypatch.setenv("AZURE_FEDERATED_TOKEN_FILE", "/var/run/secrets/azure/tokens/token")
+    monkeypatch.delenv("AZURE_CLIENT_SECRET", raising=False)
+    monkeypatch.delenv("VMSS_METRICS_AUTH_MODE", raising=False)
+
+    chain = creds_module._build_credential_chain()
+
+    assert [name for name, _ in chain] == ["default-azure-credential"]
+
+
 def test_partial_service_principal_env_does_not_block_workload_identity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
