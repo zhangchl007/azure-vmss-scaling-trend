@@ -271,13 +271,13 @@
       "type": "timeseries",
       "id": 7,
       "title": "VMSS instance count trend (per VMSS)",
-      "description": "Actual VM instance count over time, one series per VMSS.",
+      "description": "Actual VM instance count over time, one series per VMSS. Legend includes resource group so VMSS with identical names across clusters or with identical values remain distinguishable.",
       "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
       "gridPos": {"h": 10, "w": 24, "x": 0, "y": 6},
       "targets": [
         {
           "expr": "max by (subscription_id, resource_group, vmss_name, location, orchestration_mode) (\n  azure_vmss_instance_count{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", vmss_name=~\"$vmss_name\", location=~\"$location\"}\n)",
-          "legendFormat": "{{vmss_name}}",
+          "legendFormat": "{{vmss_name}} · {{resource_group}} · {{location}}",
           "refId": "A"
         }
       ],
@@ -288,7 +288,8 @@
             "lineInterpolation": "stepAfter",
             "lineWidth": 1,
             "fillOpacity": 10,
-            "showPoints": "never",
+            "showPoints": "always",
+            "pointSize": 4,
             "spanNulls": true,
             "stacking": {"mode": "none", "group": "A"},
             "axisPlacement": "auto",
@@ -398,13 +399,13 @@
       "type": "bargauge",
       "id": 10,
       "title": "Current instance count by VMSS",
-      "description": "Most recent observed VM instance count, sorted descending.",
+      "description": "Most recent observed VM instance count, sorted descending. Labels include resource group so VMSS with identical names across clusters are not collapsed.",
       "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
       "gridPos": {"h": 12, "w": 12, "x": 0, "y": 25},
       "targets": [
         {
           "expr": "max by (subscription_id, resource_group, vmss_name, location, orchestration_mode) (\n  azure_vmss_instance_count{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", vmss_name=~\"$vmss_name\", location=~\"$location\"}\n)",
-          "legendFormat": "{{vmss_name}}",
+          "legendFormat": "{{vmss_name}} · {{resource_group}}",
           "refId": "A",
           "instant": false
         }
@@ -584,12 +585,12 @@
           "targets": [
             {
               "expr": "max by (subscription_id, resource_group, vmss_name, location, orchestration_mode) (\n  azure_vmss_capacity{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", vmss_name=~\"$vmss_name\", location=~\"$location\"}\n)",
-              "legendFormat": "{{vmss_name}} capacity",
+              "legendFormat": "{{vmss_name}} · {{resource_group}} capacity",
               "refId": "A"
             },
             {
               "expr": "max by (subscription_id, resource_group, vmss_name, location, orchestration_mode) (\n  azure_vmss_instance_count{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", vmss_name=~\"$vmss_name\", location=~\"$location\"}\n)",
-              "legendFormat": "{{vmss_name}} actual",
+              "legendFormat": "{{vmss_name}} · {{resource_group}} actual",
               "refId": "B"
             }
           ],
