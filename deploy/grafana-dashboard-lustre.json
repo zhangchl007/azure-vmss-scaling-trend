@@ -3,7 +3,7 @@
     {
       "name": "DS_PROMETHEUS",
       "label": "Prometheus",
-      "description": "Azure Monitor managed Prometheus (or any Prometheus) data source.",
+      "description": "Azure Monitor managed Prometheus or any Prometheus data source.",
       "type": "datasource",
       "pluginId": "prometheus",
       "pluginName": "Prometheus"
@@ -14,9 +14,7 @@
     {"type": "datasource", "id": "prometheus", "name": "Prometheus", "version": "1.0.0"},
     {"type": "panel", "id": "stat", "name": "Stat", "version": ""},
     {"type": "panel", "id": "timeseries", "name": "Time series", "version": ""},
-    {"type": "panel", "id": "bargauge", "name": "Bar gauge", "version": ""},
-    {"type": "panel", "id": "table", "name": "Table", "version": ""},
-    {"type": "panel", "id": "heatmap", "name": "Heatmap", "version": ""}
+    {"type": "panel", "id": "table", "name": "Table", "version": ""}
   ],
   "annotations": {
     "list": [
@@ -31,7 +29,7 @@
       }
     ]
   },
-  "description": "Azure Managed Lustre OST bytes available trends from the Prometheus exporter (azure_managed_lustre_*).",
+  "description": "Azure Managed Lustre key operational metrics from vmss-metrics-exporter: OST capacity, MDT capacity/files, client throughput/ops, latency, and freshness.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -50,864 +48,228 @@
     {
       "type": "stat",
       "id": 1,
-      "title": "Lustre filesystems observed",
+      "title": "Filesystems observed",
       "description": "Number of Azure Managed Lustre filesystems discovered in the latest collection.",
       "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
       "gridPos": {"h": 4, "w": 3, "x": 0, "y": 1},
-      "targets": [
-        {
-          "expr": "max(azure_managed_lustre_filesystem_total{job=\"$job\"})",
-          "legendFormat": "filesystems",
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "color": {"mode": "thresholds"},
-          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
-          "unit": "short",
-          "decimals": 0
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
-        "textMode": "auto",
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "auto"
-      },
+      "targets": [{"expr": "max(azure_managed_lustre_filesystem_total{job=\"$job\"})", "legendFormat": "filesystems", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "short", "decimals": 0, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "colorMode": "value", "graphMode": "area", "justifyMode": "auto", "textMode": "auto"},
       "pluginVersion": "10.4.0"
     },
     {
       "type": "stat",
       "id": 2,
-      "title": "OST series observed",
-      "description": "Count of selected OSTBytesAvailable time series currently exported.",
+      "title": "Min OST available %",
+      "description": "Primary data-capacity pressure signal.",
       "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
       "gridPos": {"h": 4, "w": 3, "x": 3, "y": 1},
-      "targets": [
-        {
-          "expr": "count(max by (subscription_id, resource_group, filesystem_name, location, ostnum) (\n  azure_managed_lustre_ost_bytes_available{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", filesystem_name=~\"$filesystem_name\", location=~\"$location\", ostnum=~\"$ostnum\"}\n)) or vector(0)",
-          "legendFormat": "OSTs",
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "color": {"mode": "thresholds"},
-          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
-          "unit": "short",
-          "decimals": 0
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
-        "textMode": "auto",
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "auto"
-      },
+      "targets": [{"expr": "min(max by (subscription_id, resource_group, filesystem_name, location, ostnum) (azure_managed_lustre_ost_bytes_available_percent{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", filesystem_name=~\"$filesystem_name\", location=~\"$location\", ostnum=~\"$ostnum\"}))", "legendFormat": "min OST available %", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "percent", "decimals": 2, "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "orange", "value": 5}, {"color": "green", "value": 10}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "colorMode": "background", "graphMode": "none", "justifyMode": "auto", "textMode": "auto"},
       "pluginVersion": "10.4.0"
     },
     {
       "type": "stat",
       "id": 3,
-      "title": "Total bytes available",
-      "description": "Sum of latest OST bytes available across selected Lustre filesystems and OSTs.",
+      "title": "Min MDT files free %",
+      "description": "Primary metadata file/inode exhaustion signal.",
       "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
       "gridPos": {"h": 4, "w": 3, "x": 6, "y": 1},
-      "targets": [
-        {
-          "expr": "sum(\n  max by (subscription_id, resource_group, filesystem_name, location, ostnum) (\n    azure_managed_lustre_ost_bytes_available{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", filesystem_name=~\"$filesystem_name\", location=~\"$location\", ostnum=~\"$ostnum\"}\n  )\n)",
-          "legendFormat": "bytes available",
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "color": {"mode": "thresholds"},
-          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
-          "unit": "bytes",
-          "decimals": 2
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
-        "textMode": "auto",
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "auto"
-      },
+      "targets": [{"expr": "min(max by (subscription_id, resource_group, filesystem_name, location, mdtnum) (azure_managed_lustre_mdt_files_free_percent{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", filesystem_name=~\"$filesystem_name\", location=~\"$location\", mdtnum=~\"$mdtnum\"}))", "legendFormat": "min MDT files free %", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "percent", "decimals": 2, "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "orange", "value": 5}, {"color": "green", "value": 10}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "colorMode": "background", "graphMode": "none", "justifyMode": "auto", "textMode": "auto"},
       "pluginVersion": "10.4.0"
     },
     {
       "type": "stat",
       "id": 4,
-      "title": "Minimum OST available %",
-      "description": "Smallest latest available-capacity percentage across selected OSTs; this is the primary normalized capacity-pressure signal.",
+      "title": "Min MDT bytes available %",
+      "description": "MDT storage-capacity pressure signal.",
       "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
       "gridPos": {"h": 4, "w": 3, "x": 9, "y": 1},
-      "targets": [
-        {
-          "expr": "min(\n  max by (subscription_id, resource_group, filesystem_name, location, ostnum) (\n    azure_managed_lustre_ost_bytes_available_percent{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", filesystem_name=~\"$filesystem_name\", location=~\"$location\", ostnum=~\"$ostnum\"}\n  )\n)",
-          "legendFormat": "minimum %",
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "color": {"mode": "thresholds"},
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {"color": "red", "value": null},
-              {"color": "orange", "value": 5},
-              {"color": "green", "value": 10}
-            ]
-          },
-          "unit": "percent",
-          "decimals": 2
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
-        "textMode": "auto",
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "auto"
-      },
+      "targets": [{"expr": "min(max by (subscription_id, resource_group, filesystem_name, location, mdtnum) (azure_managed_lustre_mdt_bytes_available_percent{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", filesystem_name=~\"$filesystem_name\", location=~\"$location\", mdtnum=~\"$mdtnum\"}))", "legendFormat": "min MDT bytes available %", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "percent", "decimals": 2, "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "orange", "value": 5}, {"color": "green", "value": 10}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "colorMode": "background", "graphMode": "none", "justifyMode": "auto", "textMode": "auto"},
       "pluginVersion": "10.4.0"
     },
     {
       "type": "stat",
       "id": 5,
-      "title": "Lustre collector freshness",
-      "description": "Seconds since the last successful Managed Lustre collection. Should stay below the 60s Lustre poll interval plus margin.",
+      "title": "Collector freshness",
+      "description": "Seconds since last successful Managed Lustre collection.",
       "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
       "gridPos": {"h": 4, "w": 3, "x": 12, "y": 1},
-      "targets": [
-        {
-          "expr": "time() - max(azure_managed_lustre_last_success_timestamp_seconds{job=\"$job\"})",
-          "legendFormat": "age",
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "color": {"mode": "thresholds"},
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {"color": "green", "value": null},
-              {"color": "orange", "value": 180},
-              {"color": "red", "value": 300}
-            ]
-          },
-          "unit": "s",
-          "decimals": 0
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
-        "textMode": "auto",
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "auto"
-      },
-      "pluginVersion": "10.4.0"
-    },
-    {
-      "type": "stat",
-      "id": 14,
-      "title": "Max OST sample age",
-      "description": "Maximum age in seconds of Azure Monitor OSTBytesAvailable samples across selected OSTs. This catches Azure Monitor ingestion lag even when the exporter is running.",
-      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-      "gridPos": {"h": 4, "w": 3, "x": 15, "y": 1},
-      "targets": [
-        {
-          "expr": "max(\n  time() - azure_managed_lustre_ost_sample_timestamp_seconds{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", filesystem_name=~\"$filesystem_name\", location=~\"$location\", ostnum=~\"$ostnum\"}\n)",
-          "legendFormat": "sample age",
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "color": {"mode": "thresholds"},
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {"color": "green", "value": null},
-              {"color": "orange", "value": 180},
-              {"color": "red", "value": 300}
-            ]
-          },
-          "unit": "s",
-          "decimals": 0
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
-        "textMode": "auto",
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "auto"
-      },
+      "targets": [{"expr": "time() - max(azure_managed_lustre_last_success_timestamp_seconds{job=\"$job\"})", "legendFormat": "age", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "s", "decimals": 0, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 180}, {"color": "red", "value": 300}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "colorMode": "background", "graphMode": "none", "justifyMode": "auto", "textMode": "auto"},
       "pluginVersion": "10.4.0"
     },
     {
       "type": "stat",
       "id": 6,
-      "title": "Lustre errors (5m rate)",
-      "description": "Rate of failed Azure Managed Lustre collection calls over the last 5 minutes.",
+      "title": "Max OST sample age",
+      "description": "Maximum Azure Monitor OST sample age in seconds.",
       "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-      "gridPos": {"h": 4, "w": 3, "x": 18, "y": 1},
-      "targets": [
-        {
-          "expr": "sum(rate(azure_managed_lustre_collection_errors_total{job=\"$job\"}[5m]))",
-          "legendFormat": "errors/s",
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "color": {"mode": "thresholds"},
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {"color": "green", "value": null},
-              {"color": "orange", "value": 0.0001},
-              {"color": "red", "value": 0.01}
-            ]
-          },
-          "unit": "ops",
-          "decimals": 4
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
-        "textMode": "auto",
-        "colorMode": "background",
-        "graphMode": "area",
-        "justifyMode": "auto"
-      },
+      "gridPos": {"h": 4, "w": 3, "x": 15, "y": 1},
+      "targets": [{"expr": "max(time() - azure_managed_lustre_ost_sample_timestamp_seconds{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", filesystem_name=~\"$filesystem_name\", location=~\"$location\", ostnum=~\"$ostnum\"})", "legendFormat": "OST sample age", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "s", "decimals": 0, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 180}, {"color": "red", "value": 300}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "colorMode": "background", "graphMode": "none", "justifyMode": "auto", "textMode": "auto"},
       "pluginVersion": "10.4.0"
     },
     {
       "type": "stat",
-      "id": 15,
-      "title": "Lustre collection duration",
-      "description": "Duration of the most recent Managed Lustre collection attempt. If this approaches the poll interval, reduce cluster fan-out or increase workers carefully.",
+      "id": 7,
+      "title": "Max MDT sample age",
+      "description": "Maximum Azure Monitor MDT sample age in seconds.",
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "gridPos": {"h": 4, "w": 3, "x": 18, "y": 1},
+      "targets": [{"expr": "max(time() - azure_managed_lustre_mdt_sample_timestamp_seconds{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", filesystem_name=~\"$filesystem_name\", location=~\"$location\", mdtnum=~\"$mdtnum\"})", "legendFormat": "MDT sample age", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "s", "decimals": 0, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 180}, {"color": "red", "value": 300}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "colorMode": "background", "graphMode": "none", "justifyMode": "auto", "textMode": "auto"},
+      "pluginVersion": "10.4.0"
+    },
+    {
+      "type": "stat",
+      "id": 8,
+      "title": "Errors 5m rate",
+      "description": "Rate of failed Managed Lustre collection calls over five minutes.",
       "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
       "gridPos": {"h": 4, "w": 3, "x": 21, "y": 1},
-      "targets": [
-        {
-          "expr": "max(azure_managed_lustre_collection_duration_seconds{job=\"$job\"})",
-          "legendFormat": "duration",
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "color": {"mode": "thresholds"},
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {"color": "green", "value": null},
-              {"color": "orange", "value": 30},
-              {"color": "red", "value": 60}
-            ]
-          },
-          "unit": "s",
-          "decimals": 2
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
-        "textMode": "auto",
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "auto"
-      },
+      "targets": [{"expr": "sum(rate(azure_managed_lustre_collection_errors_total{job=\"$job\"}[5m]))", "legendFormat": "errors/s", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "ops", "decimals": 4, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 0.0001}, {"color": "red", "value": 0.01}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "colorMode": "background", "graphMode": "area", "justifyMode": "auto", "textMode": "auto"},
       "pluginVersion": "10.4.0"
     },
     {
       "type": "row",
       "id": 101,
-      "title": "Trends",
+      "title": "Capacity pressure",
       "gridPos": {"h": 1, "w": 24, "x": 0, "y": 5},
       "collapsed": false,
       "panels": []
     },
     {
       "type": "timeseries",
-      "id": 7,
-      "title": "Lowest OST available % trend (bottom $top_n by $rank_by)",
-      "description": "One line per selected Lustre OST, focused on the bottom $top_n OSTs with the lowest available percentage. This is the alert-first view.",
-      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-      "gridPos": {"h": 10, "w": 14, "x": 0, "y": 6},
-      "targets": [
-        {
-          "expr": "bottomk($top_n,\n  $rank_by by (subscription_id, resource_group, filesystem_name, location, ostnum) (\n    azure_managed_lustre_ost_bytes_available_percent{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", filesystem_name=~\"$filesystem_name\", location=~\"$location\", ostnum=~\"$ostnum\"}\n  )\n)",
-          "legendFormat": "{{filesystem_name}} · OST {{ostnum}} · {{resource_group}}",
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "stepAfter",
-            "lineWidth": 2,
-            "fillOpacity": 0,
-            "showPoints": "never",
-            "pointSize": 5,
-            "spanNulls": true,
-            "stacking": {"mode": "none", "group": "A"},
-            "axisPlacement": "auto",
-            "axisLabel": "available %",
-            "axisSoftMin": 0,
-            "scaleDistribution": {"type": "linear"}
-          },
-          "color": {"mode": "palette-classic"},
-          "unit": "percent",
-          "decimals": 2,
-          "min": 0
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true,
-          "calcs": ["lastNotNull", "min", "max", "mean"]
-        },
-        "tooltip": {"mode": "multi", "sort": "asc"}
-      }
-    },
-    {
-      "type": "timeseries",
-      "id": 8,
-      "title": "Total bytes available by filesystem",
-      "description": "Sum of OSTBytesAvailable by Azure Managed Lustre filesystem.",
-      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-      "gridPos": {"h": 10, "w": 10, "x": 14, "y": 6},
-      "targets": [
-        {
-          "expr": "topk($top_n,\n  sum by (subscription_id, resource_group, filesystem_name, location) (\n    max by (subscription_id, resource_group, filesystem_name, location, ostnum) (\n      azure_managed_lustre_ost_bytes_available{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", filesystem_name=~\"$filesystem_name\", location=~\"$location\", ostnum=~\"$ostnum\"}\n    )\n  )\n)",
-          "legendFormat": "{{filesystem_name}} · {{resource_group}}",
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "smooth",
-            "lineWidth": 2,
-            "fillOpacity": 20,
-            "showPoints": "never",
-            "spanNulls": true,
-            "stacking": {"mode": "none", "group": "A"}
-          },
-          "color": {"mode": "palette-classic"},
-          "unit": "bytes",
-          "decimals": 2,
-          "min": 0
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {"displayMode": "list", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull"]},
-        "tooltip": {"mode": "multi", "sort": "desc"}
-      }
-    },
-    {
-      "type": "row",
-      "id": 102,
-      "title": "Aggregations & Distribution",
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 16},
-      "collapsed": false,
-      "panels": []
-    },
-    {
-      "type": "timeseries",
       "id": 9,
-      "title": "Total bytes available by resource group",
-      "description": "Stacked total bytes available grouped by Azure resource group.",
+      "title": "Lowest OST available % trend",
+      "description": "Bottom-N OST capacity pressure. When Azure Monitor returns aggregate metrics, ostnum is all.",
       "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 17},
-      "targets": [
-        {
-          "expr": "topk($top_n,\n  sum by (resource_group) (\n    max by (subscription_id, resource_group, filesystem_name, location, ostnum) (\n      azure_managed_lustre_ost_bytes_available{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", filesystem_name=~\"$filesystem_name\", location=~\"$location\", ostnum=~\"$ostnum\"}\n    )\n  )\n)",
-          "legendFormat": "{{resource_group}}",
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "smooth",
-            "lineWidth": 2,
-            "fillOpacity": 40,
-            "showPoints": "never",
-            "spanNulls": true,
-            "stacking": {"mode": "normal", "group": "A"}
-          },
-          "color": {"mode": "palette-classic"},
-          "unit": "bytes",
-          "decimals": 2,
-          "min": 0
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {"displayMode": "list", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull"]},
-        "tooltip": {"mode": "multi", "sort": "desc"}
-      }
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 6},
+      "targets": [{"expr": "bottomk($top_n, $rank_by by (subscription_id, resource_group, filesystem_name, location, ostnum) (azure_managed_lustre_ost_bytes_available_percent{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", filesystem_name=~\"$filesystem_name\", location=~\"$location\", ostnum=~\"$ostnum\"}))", "legendFormat": "{{filesystem_name}} · OST {{ostnum}}", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "percent", "decimals": 2, "min": 0, "custom": {"drawStyle": "line", "lineInterpolation": "stepAfter", "lineWidth": 2, "fillOpacity": 0, "showPoints": "never", "spanNulls": true, "stacking": {"mode": "none", "group": "A"}}}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "min"]}, "tooltip": {"mode": "multi", "sort": "asc"}}
     },
     {
       "type": "timeseries",
       "id": 10,
-      "title": "Total bytes available by subscription",
-      "description": "Aggregate bytes available per Azure subscription.",
+      "title": "Lowest MDT files free % trend",
+      "description": "Bottom-N MDT metadata file/inode pressure.",
       "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 17},
-      "targets": [
-        {
-          "expr": "sum by (subscription_id) (\n  max by (subscription_id, resource_group, filesystem_name, location, ostnum) (\n    azure_managed_lustre_ost_bytes_available{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", filesystem_name=~\"$filesystem_name\", location=~\"$location\", ostnum=~\"$ostnum\"}\n  )\n)",
-          "legendFormat": "{{subscription_id}}",
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "smooth",
-            "lineWidth": 2,
-            "fillOpacity": 30,
-            "showPoints": "never",
-            "spanNulls": true,
-            "stacking": {"mode": "normal", "group": "A"}
-          },
-          "color": {"mode": "palette-classic"},
-          "unit": "bytes",
-          "decimals": 2,
-          "min": 0
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {"displayMode": "list", "placement": "bottom", "showLegend": true},
-        "tooltip": {"mode": "multi", "sort": "desc"}
-      }
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 6},
+      "targets": [{"expr": "bottomk($top_n, $rank_by by (subscription_id, resource_group, filesystem_name, location, mdtnum) (azure_managed_lustre_mdt_files_free_percent{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", filesystem_name=~\"$filesystem_name\", location=~\"$location\", mdtnum=~\"$mdtnum\"}))", "legendFormat": "{{filesystem_name}} · MDT {{mdtnum}}", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "percent", "decimals": 2, "min": 0, "custom": {"drawStyle": "line", "lineInterpolation": "stepAfter", "lineWidth": 2, "fillOpacity": 0, "showPoints": "never", "spanNulls": true, "stacking": {"mode": "none", "group": "A"}}}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "min"]}, "tooltip": {"mode": "multi", "sort": "asc"}}
     },
     {
       "type": "timeseries",
       "id": 11,
-      "title": "Total bytes available by location",
-      "description": "Aggregate bytes available per Azure region.",
+      "title": "Lowest MDT bytes available % trend",
+      "description": "Bottom-N MDT storage pressure.",
       "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 17},
-      "targets": [
-        {
-          "expr": "sum by (location) (\n  max by (subscription_id, resource_group, filesystem_name, location, ostnum) (\n    azure_managed_lustre_ost_bytes_available{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", filesystem_name=~\"$filesystem_name\", location=~\"$location\", ostnum=~\"$ostnum\"}\n  )\n)",
-          "legendFormat": "{{location}}",
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "smooth",
-            "lineWidth": 2,
-            "fillOpacity": 30,
-            "showPoints": "never",
-            "spanNulls": true,
-            "stacking": {"mode": "normal", "group": "A"}
-          },
-          "color": {"mode": "palette-classic"},
-          "unit": "bytes",
-          "decimals": 2,
-          "min": 0
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {"displayMode": "list", "placement": "bottom", "showLegend": true},
-        "tooltip": {"mode": "multi", "sort": "desc"}
-      }
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 6},
+      "targets": [{"expr": "bottomk($top_n, $rank_by by (subscription_id, resource_group, filesystem_name, location, mdtnum) (azure_managed_lustre_mdt_bytes_available_percent{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", filesystem_name=~\"$filesystem_name\", location=~\"$location\", mdtnum=~\"$mdtnum\"}))", "legendFormat": "{{filesystem_name}} · MDT {{mdtnum}}", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "percent", "decimals": 2, "min": 0, "custom": {"drawStyle": "line", "lineInterpolation": "stepAfter", "lineWidth": 2, "fillOpacity": 0, "showPoints": "never", "spanNulls": true, "stacking": {"mode": "none", "group": "A"}}}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "min"]}, "tooltip": {"mode": "multi", "sort": "asc"}}
     },
     {
       "type": "row",
-      "id": 103,
-      "title": "Current snapshot",
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 25},
+      "id": 102,
+      "title": "Client workload",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 14},
       "collapsed": false,
       "panels": []
     },
     {
-      "type": "bargauge",
+      "type": "timeseries",
       "id": 12,
-      "title": "Lowest current available % by OST",
-      "description": "Bottom $top_n current available-capacity percentage values. Use filesystem and OST variables to drill down.",
+      "title": "Client read/write throughput by filesystem",
+      "description": "Client data transfer rate grouped by filesystem.",
       "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-      "gridPos": {"h": 12, "w": 12, "x": 0, "y": 26},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 15},
       "targets": [
-        {
-          "expr": "bottomk($top_n,\n  max by (subscription_id, resource_group, filesystem_name, location, ostnum) (\n    azure_managed_lustre_ost_bytes_available_percent{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", filesystem_name=~\"$filesystem_name\", location=~\"$location\", ostnum=~\"$ostnum\"}\n  )\n)",
-          "legendFormat": "{{filesystem_name}} · OST {{ostnum}} · {{resource_group}}",
-          "refId": "A",
-          "instant": false
-        }
+        {"expr": "topk($top_n, sum by (filesystem_name) (azure_managed_lustre_client_read_throughput_bytes_per_second{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", filesystem_name=~\"$filesystem_name\", location=~\"$location\", ostnum=~\"$ostnum\"}))", "legendFormat": "read · {{filesystem_name}}", "refId": "A"},
+        {"expr": "topk($top_n, sum by (filesystem_name) (azure_managed_lustre_client_write_throughput_bytes_per_second{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", filesystem_name=~\"$filesystem_name\", location=~\"$location\", ostnum=~\"$ostnum\"}))", "legendFormat": "write · {{filesystem_name}}", "refId": "B"}
       ],
-      "fieldConfig": {
-        "defaults": {
-          "color": {"mode": "thresholds"},
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {"color": "red", "value": null},
-              {"color": "orange", "value": 5},
-              {"color": "green", "value": 10}
-            ]
-          },
-          "unit": "percent",
-          "decimals": 2,
-          "min": 0
-        },
-        "overrides": []
-      },
-      "options": {
-        "orientation": "horizontal",
-        "displayMode": "gradient",
-        "showUnfilled": true,
-        "valueMode": "color",
-        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}
-      },
-      "pluginVersion": "10.4.0"
+      "fieldConfig": {"defaults": {"unit": "Bps", "decimals": 2, "min": 0, "custom": {"drawStyle": "line", "lineInterpolation": "smooth", "lineWidth": 2, "fillOpacity": 15, "showPoints": "never", "spanNulls": true, "stacking": {"mode": "none", "group": "A"}}}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max"]}, "tooltip": {"mode": "multi", "sort": "desc"}}
     },
     {
-      "type": "table",
+      "type": "timeseries",
       "id": 13,
-      "title": "Managed Lustre OST inventory (latest)",
-      "description": "Current Azure Managed Lustre OST capacity by subscription, resource group, filesystem, region, and OST number.",
+      "title": "Client read/write ops by filesystem",
+      "description": "Client read and write operation counts grouped by filesystem.",
       "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-      "gridPos": {"h": 12, "w": 12, "x": 12, "y": 26},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 15},
       "targets": [
-        {
-          "expr": "max by (subscription_id, resource_group, filesystem_name, location, ostnum) (\n  azure_managed_lustre_ost_bytes_available{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", filesystem_name=~\"$filesystem_name\", location=~\"$location\", ostnum=~\"$ostnum\"}\n)",
-          "legendFormat": "__auto",
-          "refId": "A",
-          "format": "table",
-          "instant": true
-        },
-        {
-          "expr": "max by (subscription_id, resource_group, filesystem_name, location, ostnum) (\n  azure_managed_lustre_ost_bytes_used{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", filesystem_name=~\"$filesystem_name\", location=~\"$location\", ostnum=~\"$ostnum\"}\n)",
-          "legendFormat": "__auto",
-          "refId": "B",
-          "format": "table",
-          "instant": true
-        },
-        {
-          "expr": "max by (subscription_id, resource_group, filesystem_name, location, ostnum) (\n  azure_managed_lustre_ost_bytes_total{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", filesystem_name=~\"$filesystem_name\", location=~\"$location\", ostnum=~\"$ostnum\"}\n)",
-          "legendFormat": "__auto",
-          "refId": "C",
-          "format": "table",
-          "instant": true
-        },
-        {
-          "expr": "max by (subscription_id, resource_group, filesystem_name, location, ostnum) (\n  azure_managed_lustre_ost_bytes_available_percent{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", filesystem_name=~\"$filesystem_name\", location=~\"$location\", ostnum=~\"$ostnum\"}\n)",
-          "legendFormat": "__auto",
-          "refId": "D",
-          "format": "table",
-          "instant": true
-        }
+        {"expr": "topk($top_n, sum by (filesystem_name) (azure_managed_lustre_client_read_ops{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", filesystem_name=~\"$filesystem_name\", location=~\"$location\", ostnum=~\"$ostnum\"}))", "legendFormat": "read ops · {{filesystem_name}}", "refId": "A"},
+        {"expr": "topk($top_n, sum by (filesystem_name) (azure_managed_lustre_client_write_ops{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", filesystem_name=~\"$filesystem_name\", location=~\"$location\", ostnum=~\"$ostnum\"}))", "legendFormat": "write ops · {{filesystem_name}}", "refId": "B"}
       ],
-      "transformations": [
-        {
-          "id": "merge",
-          "options": {}
-        },
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {
-              "Time": true,
-              "__name__": true,
-              "job": true,
-              "instance": true,
-              "namespace": true,
-              "pod": true,
-              "node": true,
-              "container": true,
-              "endpoint": true
-            },
-            "indexByName": {
-              "subscription_id": 0,
-              "resource_group": 1,
-              "filesystem_name": 2,
-              "location": 3,
-              "ostnum": 4,
-              "Value #A": 5,
-              "Value #B": 6,
-              "Value #C": 7,
-              "Value #D": 8
-            },
-            "renameByName": {
-              "subscription_id": "subscription",
-              "resource_group": "resource group",
-              "filesystem_name": "filesystem",
-              "location": "region",
-              "ostnum": "OST",
-              "Value #A": "bytes available",
-              "Value #B": "bytes used",
-              "Value #C": "bytes total",
-              "Value #D": "available %"
-            }
-          }
-        }
+      "fieldConfig": {"defaults": {"unit": "ops", "decimals": 2, "min": 0, "custom": {"drawStyle": "line", "lineInterpolation": "smooth", "lineWidth": 2, "fillOpacity": 15, "showPoints": "never", "spanNulls": true, "stacking": {"mode": "none", "group": "A"}}}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max"]}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    },
+    {
+      "type": "row",
+      "id": 103,
+      "title": "Operation latency and ops",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 23},
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "id": 14,
+      "title": "OST client latency / ops",
+      "description": "OST operation latency and operation count by filesystem and operation.",
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 24},
+      "targets": [
+        {"expr": "topk($top_n, max by (filesystem_name, ostnum, operation) (azure_managed_lustre_ost_client_latency_milliseconds{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", filesystem_name=~\"$filesystem_name\", location=~\"$location\", ostnum=~\"$ostnum\"}))", "legendFormat": "latency · {{filesystem_name}} · OST {{ostnum}} · {{operation}}", "refId": "A"},
+        {"expr": "topk($top_n, max by (filesystem_name, ostnum, operation) (azure_managed_lustre_ost_client_ops{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", filesystem_name=~\"$filesystem_name\", location=~\"$location\", ostnum=~\"$ostnum\"}))", "legendFormat": "ops · {{filesystem_name}} · OST {{ostnum}} · {{operation}}", "refId": "B"}
       ],
-      "fieldConfig": {
-        "defaults": {
-          "custom": {
-            "align": "auto",
-            "filterable": true,
-            "cellOptions": {"type": "auto"}
-          },
-          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}
-        },
-        "overrides": [
-          {
-            "matcher": {"id": "byName", "options": "bytes available"},
-            "properties": [
-              {"id": "unit", "value": "bytes"},
-              {"id": "decimals", "value": 2},
-              {"id": "custom.cellOptions", "value": {"type": "color-text"}},
-              {"id": "color", "value": {"mode": "thresholds"}},
-              {
-                "id": "thresholds",
-                "value": {
-                  "mode": "absolute",
-                  "steps": [
-                    {"color": "red", "value": null},
-                    {"color": "orange", "value": 107374182400},
-                    {"color": "green", "value": 1099511627776}
-                  ]
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {"id": "byName", "options": "bytes used"},
-            "properties": [
-              {"id": "unit", "value": "bytes"},
-              {"id": "decimals", "value": 2}
-            ]
-          },
-          {
-            "matcher": {"id": "byName", "options": "bytes total"},
-            "properties": [
-              {"id": "unit", "value": "bytes"},
-              {"id": "decimals", "value": 2}
-            ]
-          },
-          {
-            "matcher": {"id": "byName", "options": "available %"},
-            "properties": [
-              {"id": "unit", "value": "percent"},
-              {"id": "decimals", "value": 2},
-              {"id": "custom.cellOptions", "value": {"type": "color-background"}},
-              {"id": "color", "value": {"mode": "thresholds"}},
-              {
-                "id": "thresholds",
-                "value": {
-                  "mode": "absolute",
-                  "steps": [
-                    {"color": "red", "value": null},
-                    {"color": "orange", "value": 5},
-                    {"color": "green", "value": 10}
-                  ]
-                }
-              }
-            ]
-          }
-        ]
-      },
-      "options": {
-        "showHeader": true,
-        "cellHeight": "sm",
-        "sortBy": [{"displayName": "available %", "desc": false}]
-      },
-      "pluginVersion": "10.4.0"
+      "fieldConfig": {"defaults": {"decimals": 2, "min": 0, "custom": {"drawStyle": "line", "lineInterpolation": "smooth", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never", "spanNulls": true, "stacking": {"mode": "none", "group": "A"}}}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max"]}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    },
+    {
+      "type": "timeseries",
+      "id": 15,
+      "title": "MDT client latency / ops",
+      "description": "MDT operation latency and operation count by filesystem and operation.",
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 24},
+      "targets": [
+        {"expr": "topk($top_n, max by (filesystem_name, mdtnum, operation) (azure_managed_lustre_mdt_client_latency_milliseconds{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", filesystem_name=~\"$filesystem_name\", location=~\"$location\", mdtnum=~\"$mdtnum\"}))", "legendFormat": "latency · {{filesystem_name}} · MDT {{mdtnum}} · {{operation}}", "refId": "A"},
+        {"expr": "topk($top_n, max by (filesystem_name, mdtnum, operation) (azure_managed_lustre_mdt_client_ops{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", filesystem_name=~\"$filesystem_name\", location=~\"$location\", mdtnum=~\"$mdtnum\"}))", "legendFormat": "ops · {{filesystem_name}} · MDT {{mdtnum}} · {{operation}}", "refId": "B"}
+      ],
+      "fieldConfig": {"defaults": {"decimals": 2, "min": 0, "custom": {"drawStyle": "line", "lineInterpolation": "smooth", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never", "spanNulls": true, "stacking": {"mode": "none", "group": "A"}}}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max"]}, "tooltip": {"mode": "multi", "sort": "desc"}}
     }
   ],
   "refresh": "1m",
   "schemaVersion": 39,
-  "tags": ["azure", "managed-lustre", "amlfs", "aks", "storage"],
+  "tags": ["azure", "managed-lustre", "amlfs", "aks", "storage", "key-metrics"],
   "templating": {
     "list": [
-      {
-        "name": "DS_PROMETHEUS",
-        "label": "Data source",
-        "type": "datasource",
-        "query": "prometheus",
-        "refresh": 1,
-        "hide": 0,
-        "current": {},
-        "options": [],
-        "regex": "",
-        "skipUrlSync": false
-      },
-      {
-        "name": "job",
-        "label": "Scrape job",
-        "type": "query",
-        "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-        "query": {"qryType": 1, "query": "label_values(azure_managed_lustre_filesystem_total, job)", "refId": "StandardVariableQuery"},
-        "definition": "label_values(azure_managed_lustre_filesystem_total, job)",
-        "refresh": 2,
-        "sort": 1,
-        "multi": false,
-        "includeAll": false,
-        "current": {"selected": false, "text": "azure_metrics_vmss", "value": "azure_metrics_vmss"},
-        "options": [],
-        "hide": 0,
-        "skipUrlSync": false
-      },
-      {
-        "name": "subscription_id",
-        "label": "Subscription",
-        "type": "query",
-        "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-        "query": {"qryType": 1, "query": "label_values(azure_managed_lustre_ost_bytes_available{job=\"$job\"}, subscription_id)", "refId": "StandardVariableQuery"},
-        "definition": "label_values(azure_managed_lustre_ost_bytes_available{job=\"$job\"}, subscription_id)",
-        "refresh": 2,
-        "sort": 1,
-        "multi": true,
-        "includeAll": true,
-        "allValue": ".*",
-        "current": {"selected": true, "text": ["All"], "value": ["$__all"]},
-        "options": [],
-        "hide": 0,
-        "skipUrlSync": false
-      },
-      {
-        "name": "location",
-        "label": "Region",
-        "type": "query",
-        "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-        "query": {"qryType": 1, "query": "label_values(azure_managed_lustre_ost_bytes_available{job=\"$job\", subscription_id=~\"$subscription_id\"}, location)", "refId": "StandardVariableQuery"},
-        "definition": "label_values(azure_managed_lustre_ost_bytes_available{job=\"$job\", subscription_id=~\"$subscription_id\"}, location)",
-        "refresh": 2,
-        "sort": 1,
-        "multi": true,
-        "includeAll": true,
-        "allValue": ".*",
-        "current": {"selected": true, "text": ["All"], "value": ["$__all"]},
-        "options": [],
-        "hide": 0,
-        "skipUrlSync": false
-      },
-      {
-        "name": "resource_group",
-        "label": "Resource group",
-        "type": "query",
-        "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-        "query": {"qryType": 1, "query": "label_values(azure_managed_lustre_ost_bytes_available{job=\"$job\", subscription_id=~\"$subscription_id\", location=~\"$location\"}, resource_group)", "refId": "StandardVariableQuery"},
-        "definition": "label_values(azure_managed_lustre_ost_bytes_available{job=\"$job\", subscription_id=~\"$subscription_id\", location=~\"$location\"}, resource_group)",
-        "refresh": 2,
-        "sort": 1,
-        "multi": true,
-        "includeAll": true,
-        "allValue": ".*",
-        "current": {"selected": true, "text": ["All"], "value": ["$__all"]},
-        "options": [],
-        "hide": 0,
-        "skipUrlSync": false
-      },
-      {
-        "name": "filesystem_name",
-        "label": "Managed Lustre filesystem",
-        "type": "query",
-        "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-        "query": {"qryType": 1, "query": "label_values(azure_managed_lustre_ost_bytes_available{job=\"$job\", subscription_id=~\"$subscription_id\", location=~\"$location\", resource_group=~\"$resource_group\"}, filesystem_name)", "refId": "StandardVariableQuery"},
-        "definition": "label_values(azure_managed_lustre_ost_bytes_available{job=\"$job\", subscription_id=~\"$subscription_id\", location=~\"$location\", resource_group=~\"$resource_group\"}, filesystem_name)",
-        "refresh": 2,
-        "sort": 1,
-        "multi": true,
-        "includeAll": true,
-        "allValue": ".*",
-        "current": {"selected": true, "text": ["All"], "value": ["$__all"]},
-        "options": [],
-        "hide": 0,
-        "skipUrlSync": false
-      },
-      {
-        "name": "ostnum",
-        "label": "OST",
-        "type": "query",
-        "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-        "query": {"qryType": 1, "query": "label_values(azure_managed_lustre_ost_bytes_available{job=\"$job\", subscription_id=~\"$subscription_id\", location=~\"$location\", resource_group=~\"$resource_group\", filesystem_name=~\"$filesystem_name\"}, ostnum)", "refId": "StandardVariableQuery"},
-        "definition": "label_values(azure_managed_lustre_ost_bytes_available{job=\"$job\", subscription_id=~\"$subscription_id\", location=~\"$location\", resource_group=~\"$resource_group\", filesystem_name=~\"$filesystem_name\"}, ostnum)",
-        "refresh": 2,
-        "sort": 3,
-        "multi": true,
-        "includeAll": true,
-        "allValue": ".*",
-        "current": {"selected": true, "text": ["All"], "value": ["$__all"]},
-        "options": [],
-        "hide": 0,
-        "skipUrlSync": false
-      },
-      {
-        "name": "top_n",
-        "label": "Top/Bottom N",
-        "description": "Limit high-cardinality OST and filesystem panels to the top N series.",
-        "type": "custom",
-        "query": "5,10,20,50,100,500,1000",
-        "current": {"selected": true, "text": "20", "value": "20"},
-        "options": [
-          {"selected": false, "text": "5", "value": "5"},
-          {"selected": false, "text": "10", "value": "10"},
-          {"selected": true, "text": "20", "value": "20"},
-          {"selected": false, "text": "50", "value": "50"},
-          {"selected": false, "text": "100", "value": "100"},
-          {"selected": false, "text": "500", "value": "500"},
-          {"selected": false, "text": "1000", "value": "1000"}
-        ],
-        "multi": false,
-        "includeAll": false,
-        "hide": 0,
-        "skipUrlSync": false
-      },
-      {
-        "name": "rank_by",
-        "label": "Rank Bottom-N by",
-        "description": "Aggregation used to pick the lowest-capacity OST series. 'min' highlights sustained/peak pressure; 'avg' ranks by average available bytes.",
-        "type": "custom",
-        "query": "min,avg",
-        "current": {"selected": true, "text": "min", "value": "min"},
-        "options": [
-          {"selected": true,  "text": "min", "value": "min"},
-          {"selected": false, "text": "avg", "value": "avg"}
-        ],
-        "multi": false,
-        "includeAll": false,
-        "hide": 0,
-        "skipUrlSync": false
-      }
+      {"name": "DS_PROMETHEUS", "label": "Data source", "type": "datasource", "query": "prometheus", "refresh": 1, "hide": 0, "current": {}, "options": [], "regex": "", "skipUrlSync": false},
+      {"name": "job", "label": "Scrape job", "type": "query", "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "query": {"qryType": 1, "query": "label_values(azure_managed_lustre_filesystem_total, job)", "refId": "StandardVariableQuery"}, "definition": "label_values(azure_managed_lustre_filesystem_total, job)", "refresh": 2, "sort": 1, "multi": false, "includeAll": false, "current": {"selected": false, "text": "azure_metrics_vmss", "value": "azure_metrics_vmss"}, "options": [], "hide": 0, "skipUrlSync": false},
+      {"name": "subscription_id", "label": "Subscription", "type": "query", "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "query": {"qryType": 1, "query": "label_values(azure_managed_lustre_ost_bytes_available{job=\"$job\"}, subscription_id)", "refId": "StandardVariableQuery"}, "definition": "label_values(azure_managed_lustre_ost_bytes_available{job=\"$job\"}, subscription_id)", "refresh": 2, "sort": 1, "multi": true, "includeAll": true, "allValue": ".*", "current": {"selected": true, "text": ["All"], "value": ["$__all"]}, "options": [], "hide": 0, "skipUrlSync": false},
+      {"name": "location", "label": "Region", "type": "query", "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "query": {"qryType": 1, "query": "label_values(azure_managed_lustre_ost_bytes_available{job=\"$job\", subscription_id=~\"$subscription_id\"}, location)", "refId": "StandardVariableQuery"}, "definition": "label_values(azure_managed_lustre_ost_bytes_available{job=\"$job\", subscription_id=~\"$subscription_id\"}, location)", "refresh": 2, "sort": 1, "multi": true, "includeAll": true, "allValue": ".*", "current": {"selected": true, "text": ["All"], "value": ["$__all"]}, "options": [], "hide": 0, "skipUrlSync": false},
+      {"name": "resource_group", "label": "Resource group", "type": "query", "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "query": {"qryType": 1, "query": "label_values(azure_managed_lustre_ost_bytes_available{job=\"$job\", subscription_id=~\"$subscription_id\", location=~\"$location\"}, resource_group)", "refId": "StandardVariableQuery"}, "definition": "label_values(azure_managed_lustre_ost_bytes_available{job=\"$job\", subscription_id=~\"$subscription_id\", location=~\"$location\"}, resource_group)", "refresh": 2, "sort": 1, "multi": true, "includeAll": true, "allValue": ".*", "current": {"selected": true, "text": ["All"], "value": ["$__all"]}, "options": [], "hide": 0, "skipUrlSync": false},
+      {"name": "filesystem_name", "label": "Managed Lustre filesystem", "type": "query", "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "query": {"qryType": 1, "query": "label_values(azure_managed_lustre_ost_bytes_available{job=\"$job\", subscription_id=~\"$subscription_id\", location=~\"$location\", resource_group=~\"$resource_group\"}, filesystem_name)", "refId": "StandardVariableQuery"}, "definition": "label_values(azure_managed_lustre_ost_bytes_available{job=\"$job\", subscription_id=~\"$subscription_id\", location=~\"$location\", resource_group=~\"$resource_group\"}, filesystem_name)", "refresh": 2, "sort": 1, "multi": true, "includeAll": true, "allValue": ".*", "current": {"selected": true, "text": ["All"], "value": ["$__all"]}, "options": [], "hide": 0, "skipUrlSync": false},
+      {"name": "ostnum", "label": "OST", "type": "query", "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "query": {"qryType": 1, "query": "label_values(azure_managed_lustre_ost_bytes_available{job=\"$job\", subscription_id=~\"$subscription_id\", location=~\"$location\", resource_group=~\"$resource_group\", filesystem_name=~\"$filesystem_name\"}, ostnum)", "refId": "StandardVariableQuery"}, "definition": "label_values(azure_managed_lustre_ost_bytes_available{job=\"$job\", subscription_id=~\"$subscription_id\", location=~\"$location\", resource_group=~\"$resource_group\", filesystem_name=~\"$filesystem_name\"}, ostnum)", "refresh": 2, "sort": 3, "multi": true, "includeAll": true, "allValue": ".*", "current": {"selected": true, "text": ["All"], "value": ["$__all"]}, "options": [], "hide": 0, "skipUrlSync": false},
+      {"name": "mdtnum", "label": "MDT", "type": "query", "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "query": {"qryType": 1, "query": "label_values(azure_managed_lustre_mdt_bytes_available{job=\"$job\", subscription_id=~\"$subscription_id\", location=~\"$location\", resource_group=~\"$resource_group\", filesystem_name=~\"$filesystem_name\"}, mdtnum)", "refId": "StandardVariableQuery"}, "definition": "label_values(azure_managed_lustre_mdt_bytes_available{job=\"$job\", subscription_id=~\"$subscription_id\", location=~\"$location\", resource_group=~\"$resource_group\", filesystem_name=~\"$filesystem_name\"}, mdtnum)", "refresh": 2, "sort": 3, "multi": true, "includeAll": true, "allValue": ".*", "current": {"selected": true, "text": ["All"], "value": ["$__all"]}, "options": [], "hide": 0, "skipUrlSync": false},
+      {"name": "top_n", "label": "Top/Bottom N", "type": "custom", "query": "5,10,20,50,100", "current": {"selected": true, "text": "20", "value": "20"}, "options": [{"selected": false, "text": "5", "value": "5"}, {"selected": false, "text": "10", "value": "10"}, {"selected": true, "text": "20", "value": "20"}, {"selected": false, "text": "50", "value": "50"}, {"selected": false, "text": "100", "value": "100"}], "multi": false, "includeAll": false, "hide": 0, "skipUrlSync": false},
+      {"name": "rank_by", "label": "Rank Bottom-N by", "type": "custom", "query": "min,avg", "current": {"selected": true, "text": "min", "value": "min"}, "options": [{"selected": true, "text": "min", "value": "min"}, {"selected": false, "text": "avg", "value": "avg"}], "multi": false, "includeAll": false, "hide": 0, "skipUrlSync": false}
     ]
   },
   "time": {"from": "now-6h", "to": "now"},
@@ -916,8 +278,8 @@
     "time_options": ["5m", "15m", "1h", "6h", "12h", "24h", "2d", "7d", "30d"]
   },
   "timezone": "",
-  "title": "Azure Managed Lustre OST Capacity",
-  "uid": "azure-managed-lustre-ost-capacity",
-  "version": 1,
+  "title": "Azure Managed Lustre Key Metrics",
+  "uid": "azure-managed-lustre-key-metrics",
+  "version": 2,
   "weekStart": ""
 }

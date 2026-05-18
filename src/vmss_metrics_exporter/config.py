@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import socket
 from dataclasses import dataclass
 
 from dotenv import load_dotenv
@@ -27,6 +28,13 @@ class Settings:
     lustre_metrics_lookback_minutes: int = 15
     lustre_metrics_interval: str = "PT1M"
     lustre_metrics_max_workers: int = 4
+    leader_election_enabled: bool = False
+    leader_election_lock_name: str = "vmss-metrics-exporter"
+    leader_election_namespace: str = "default"
+    leader_election_identity: str = ""
+    leader_election_lease_duration_seconds: int = 15
+    leader_election_renew_deadline_seconds: int = 10
+    leader_election_retry_period_seconds: int = 2
 
 
 def load_settings(*, require_subscription_ids: bool = True) -> Settings:
@@ -69,6 +77,7 @@ def load_settings(*, require_subscription_ids: bool = True) -> Settings:
         lustre_metrics_max_workers=_get_int(
             "LUSTRE_METRICS_MAX_WORKERS", default=4, minimum=1, maximum=32
         ),
+        **_load_leader_election_settings(),
     )
 
 
@@ -133,3 +142,54 @@ def _get_bool(name: str, *, default: bool) -> bool:
     if normalized in {"0", "false", "no", "n", "off"}:
         return False
     raise ValueError(f"{name} must be a boolean, got {raw!r}")
+
+
+def _load_leader_election_settings() -> dict[str, object]:
+    """Parse leader-election environment variables with cross-field validation.
+
+    Returns kwargs suitable for ``Settings(**kwargs)``. When leader election is
+    disabled (the default), the lease parameters fall back to safe defaults.
+    """
+
+    enabled = _get_bool("LEADER_ELECTION_ENABLED", default=False)
+    lock_name = os.getenv("LEADER_ELECTION_LOCK_NAME", "vmss-metrics-exporter")
+    namespace = (
+        os.getenv("LEADER_ELECTION_NAMESPACE")
+        or os.getenv("POD_NAMESPACE")
+        or "default"
+    )
+    identity = (
+        os.getenv("LEADER_ELECTION_IDENTITY")
+        or os.getenv("POD_NAME")
+        or socket.gethostname()
+    )
+    lease_duration = _get_int(
+        "LEADER_ELECTION_LEASE_DURATION_SECONDS", default=15, minimum=5, maximum=120
+    )
+    renew_deadline = _get_int(
+        "LEADER_ELECTION_RENEW_DEADLINE_SECONDS", default=10, minimum=2, maximum=119
+    )
+    retry_period = _get_int(
+        "LEADER_ELECTION_RETRY_PERIOD_SECONDS", default=2, minimum=1, maximum=60
+    )
+    if renew_deadline >= lease_duration:
+        raise ValueError(
+            "LEADER_ELECTION_RENEW_DEADLINE_SECONDS "
+            f"({renew_deadline}) must be strictly less than "
+            f"LEADER_ELECTION_LEASE_DURATION_SECONDS ({lease_duration})"
+        )
+    if retry_period >= renew_deadline:
+        raise ValueError(
+            "LEADER_ELECTION_RETRY_PERIOD_SECONDS "
+            f"({retry_period}) must be strictly less than "
+            f"LEADER_ELECTION_RENEW_DEADLINE_SECONDS ({renew_deadline})"
+        )
+    return {
+        "leader_election_enabled": enabled,
+        "leader_election_lock_name": lock_name,
+        "leader_election_namespace": namespace,
+        "leader_election_identity": identity,
+        "leader_election_lease_duration_seconds": lease_duration,
+        "leader_election_renew_deadline_seconds": renew_deadline,
+        "leader_election_retry_period_seconds": retry_period,
+    }

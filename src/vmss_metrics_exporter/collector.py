@@ -11,7 +11,14 @@ from contextlib import suppress
 from prometheus_client import REGISTRY, Counter, Gauge
 from prometheus_client.registry import CollectorRegistry
 
-from .models import ManagedLustreCollectionResult, ManagedLustreOstMetric, VmssCount
+from .models import (
+    ManagedLustreCollectionResult,
+    ManagedLustreMdtMetric,
+    ManagedLustreMdtOperationMetric,
+    ManagedLustreOstMetric,
+    ManagedLustreOstOperationMetric,
+    VmssCount,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -41,6 +48,18 @@ LUSTRE_OST_LABELS = (
     "ostnum",
 )
 
+LUSTRE_OST_OPERATION_LABELS = (*LUSTRE_OST_LABELS, "operation")
+
+LUSTRE_MDT_LABELS = (
+    "subscription_id",
+    "resource_group",
+    "filesystem_name",
+    "location",
+    "mdtnum",
+)
+
+LUSTRE_MDT_OPERATION_LABELS = (*LUSTRE_MDT_LABELS, "operation")
+
 
 class VmssMetricsExporter:
     """Poll Azure and update Prometheus gauges with cached VMSS counts."""
@@ -53,18 +72,32 @@ class VmssMetricsExporter:
         poll_interval_seconds: int = 300,
         lustre_poll_interval_seconds: int = 60,
         registry: CollectorRegistry | None = None,
+        leader_election_enabled: bool = False,
     ) -> None:
         self._collect_counts = collect_counts
         self._collect_lustre_metrics = collect_lustre_metrics
         self._poll_interval_seconds = poll_interval_seconds
         self._lustre_poll_interval_seconds = lustre_poll_interval_seconds
+        self._leader_election_enabled = leader_election_enabled
         self._stop_event = threading.Event()
+        # When leader election is disabled the event is permanently set so the
+        # polling loops behave exactly as they did before this feature landed.
+        self._is_leader_event = threading.Event()
+        if not leader_election_enabled:
+            self._is_leader_event.set()
         self._vmss_thread: threading.Thread | None = None
         self._lustre_thread: threading.Thread | None = None
         self._metric_lock = threading.Lock()
         self._active_labelsets: set[tuple[str, str, str, str, str]] = set()
         self._active_info_labelsets: set[tuple[str, str, str, str, str, str, str]] = set()
         self._active_lustre_ost_labelsets: set[tuple[str, str, str, str, str]] = set()
+        self._active_lustre_ost_operation_labelsets: set[
+            tuple[str, str, str, str, str, str]
+        ] = set()
+        self._active_lustre_mdt_labelsets: set[tuple[str, str, str, str, str]] = set()
+        self._active_lustre_mdt_operation_labelsets: set[
+            tuple[str, str, str, str, str, str]
+        ] = set()
 
         effective_registry = registry if registry is not None else REGISTRY
 
@@ -143,10 +176,138 @@ class VmssMetricsExporter:
             LUSTRE_OST_LABELS,
             registry=effective_registry,
         )
+        self.lustre_client_read_ops = Gauge(
+            "azure_managed_lustre_client_read_ops",
+            "Azure Managed Lustre client read operations from Azure Monitor ClientReadOps.",
+            LUSTRE_OST_LABELS,
+            registry=effective_registry,
+        )
+        self.lustre_client_read_throughput = Gauge(
+            "azure_managed_lustre_client_read_throughput_bytes_per_second",
+            "Azure Managed Lustre client read throughput from Azure Monitor ClientReadThroughput.",
+            LUSTRE_OST_LABELS,
+            registry=effective_registry,
+        )
+        self.lustre_client_write_ops = Gauge(
+            "azure_managed_lustre_client_write_ops",
+            "Azure Managed Lustre client write operations from Azure Monitor ClientWriteOps.",
+            LUSTRE_OST_LABELS,
+            registry=effective_registry,
+        )
+        self.lustre_client_write_throughput = Gauge(
+            "azure_managed_lustre_client_write_throughput_bytes_per_second",
+            "Azure Managed Lustre client write throughput from Azure Monitor "
+            "ClientWriteThroughput.",
+            LUSTRE_OST_LABELS,
+            registry=effective_registry,
+        )
         self.lustre_ost_sample_timestamp = Gauge(
             "azure_managed_lustre_ost_sample_timestamp_seconds",
-            "Unix timestamp of the Azure Monitor sample backing each OSTBytesAvailable series.",
+            "Unix timestamp of the Azure Monitor sample backing each OST metric series.",
             LUSTRE_OST_LABELS,
+            registry=effective_registry,
+        )
+        self.lustre_ost_client_latency = Gauge(
+            "azure_managed_lustre_ost_client_latency_milliseconds",
+            "Azure Managed Lustre OST client latency from Azure Monitor OSTClientLatency.",
+            LUSTRE_OST_OPERATION_LABELS,
+            registry=effective_registry,
+        )
+        self.lustre_ost_client_ops = Gauge(
+            "azure_managed_lustre_ost_client_ops",
+            "Azure Managed Lustre OST client operations from Azure Monitor OSTClientOps.",
+            LUSTRE_OST_OPERATION_LABELS,
+            registry=effective_registry,
+        )
+        self.lustre_ost_operation_sample_timestamp = Gauge(
+            "azure_managed_lustre_ost_operation_sample_timestamp_seconds",
+            "Unix timestamp of the Azure Monitor sample backing each OST operation metric series.",
+            LUSTRE_OST_OPERATION_LABELS,
+            registry=effective_registry,
+        )
+        self.lustre_mdt_bytes_available = Gauge(
+            "azure_managed_lustre_mdt_bytes_available",
+            "Azure Managed Lustre MDT bytes available from Azure Monitor MDTBytesAvailable.",
+            LUSTRE_MDT_LABELS,
+            registry=effective_registry,
+        )
+        self.lustre_mdt_bytes_used = Gauge(
+            "azure_managed_lustre_mdt_bytes_used",
+            "Azure Managed Lustre MDT bytes used from Azure Monitor MDTBytesUsed.",
+            LUSTRE_MDT_LABELS,
+            registry=effective_registry,
+        )
+        self.lustre_mdt_bytes_total = Gauge(
+            "azure_managed_lustre_mdt_bytes_total",
+            "Azure Managed Lustre MDT total bytes from Azure Monitor MDTBytesTotal.",
+            LUSTRE_MDT_LABELS,
+            registry=effective_registry,
+        )
+        self.lustre_mdt_bytes_available_percent = Gauge(
+            "azure_managed_lustre_mdt_bytes_available_percent",
+            "Azure Managed Lustre MDT available bytes percentage derived from bytes "
+            "available / total.",
+            LUSTRE_MDT_LABELS,
+            registry=effective_registry,
+        )
+        self.lustre_mdt_bytes_used_percent = Gauge(
+            "azure_managed_lustre_mdt_bytes_used_percent",
+            "Azure Managed Lustre MDT used bytes percentage derived from bytes used / total.",
+            LUSTRE_MDT_LABELS,
+            registry=effective_registry,
+        )
+        self.lustre_mdt_files_free = Gauge(
+            "azure_managed_lustre_mdt_files_free",
+            "Azure Managed Lustre MDT free inode/file count from Azure Monitor MDTFilesFree.",
+            LUSTRE_MDT_LABELS,
+            registry=effective_registry,
+        )
+        self.lustre_mdt_files_used = Gauge(
+            "azure_managed_lustre_mdt_files_used",
+            "Azure Managed Lustre MDT used inode/file count from Azure Monitor MDTFilesUsed.",
+            LUSTRE_MDT_LABELS,
+            registry=effective_registry,
+        )
+        self.lustre_mdt_files_total = Gauge(
+            "azure_managed_lustre_mdt_files_total",
+            "Azure Managed Lustre MDT total inode/file count from Azure Monitor MDTFilesTotal.",
+            LUSTRE_MDT_LABELS,
+            registry=effective_registry,
+        )
+        self.lustre_mdt_files_free_percent = Gauge(
+            "azure_managed_lustre_mdt_files_free_percent",
+            "Azure Managed Lustre MDT free inode/file percentage derived from files free / total.",
+            LUSTRE_MDT_LABELS,
+            registry=effective_registry,
+        )
+        self.lustre_mdt_files_used_percent = Gauge(
+            "azure_managed_lustre_mdt_files_used_percent",
+            "Azure Managed Lustre MDT used inode/file percentage derived from files used / total.",
+            LUSTRE_MDT_LABELS,
+            registry=effective_registry,
+        )
+        self.lustre_mdt_sample_timestamp = Gauge(
+            "azure_managed_lustre_mdt_sample_timestamp_seconds",
+            "Unix timestamp of the Azure Monitor sample backing each MDT metric series.",
+            LUSTRE_MDT_LABELS,
+            registry=effective_registry,
+        )
+        self.lustre_mdt_client_latency = Gauge(
+            "azure_managed_lustre_mdt_client_latency_milliseconds",
+            "Azure Managed Lustre MDT client latency from Azure Monitor MDTClientLatency.",
+            LUSTRE_MDT_OPERATION_LABELS,
+            registry=effective_registry,
+        )
+        self.lustre_mdt_client_ops = Gauge(
+            "azure_managed_lustre_mdt_client_ops",
+            "Azure Managed Lustre MDT client operations from Azure Monitor MDTClientOps.",
+            LUSTRE_MDT_OPERATION_LABELS,
+            registry=effective_registry,
+        )
+        self.lustre_mdt_operation_sample_timestamp = Gauge(
+            "azure_managed_lustre_mdt_operation_sample_timestamp_seconds",
+            "Unix timestamp of the Azure Monitor sample backing each MDT operation metric series.",
+            LUSTRE_MDT_OPERATION_LABELS,
             registry=effective_registry,
         )
         self.lustre_filesystem_total = Gauge(
@@ -174,6 +335,16 @@ class VmssMetricsExporter:
             "Total Azure Managed Lustre collection errors observed by this exporter process.",
             registry=effective_registry,
         )
+        self.is_leader = Gauge(
+            "azure_vmss_exporter_is_leader",
+            (
+                "Whether this exporter replica currently holds the leader-election lock. "
+                "1 = leader (actively collecting); 0 = follower (idle). When leader election "
+                "is disabled this is always 1."
+            ),
+            registry=effective_registry,
+        )
+        self.is_leader.set(0.0 if leader_election_enabled else 1.0)
 
     def collect_once(self) -> Sequence[VmssCount]:
         """Collect once and immediately update gauges."""
@@ -189,7 +360,8 @@ class VmssMetricsExporter:
 
         self._update_metrics(counts)
         if self._collect_lustre_metrics is not None:
-            self.collect_lustre_once()
+            with suppress(Exception):
+                self.collect_lustre_once()
         self.last_success_timestamp.set(time.time())
         self.collection_duration.set(time.monotonic() - start)
         self.vmss_total.set(len(counts))
@@ -211,7 +383,13 @@ class VmssMetricsExporter:
             raise
 
         remove_stale = result.error_count == 0
-        self._update_lustre_metrics(result.metrics, remove_stale=remove_stale)
+        self._update_lustre_metrics(
+            result.metrics,
+            result.operation_metrics,
+            result.mdt_metrics,
+            result.mdt_operation_metrics,
+            remove_stale=remove_stale,
+        )
         self.lustre_filesystem_total.set(result.filesystem_count)
         self.lustre_ost_total.set(len(result.metrics))
         if result.error_count:
@@ -249,22 +427,116 @@ class VmssMetricsExporter:
         """Stop the background polling thread."""
 
         self._stop_event.set()
+        # Wake up any poller blocked in _wait_for_leadership_or_stop().
+        self._is_leader_event.set()
         if self._vmss_thread:
             self._vmss_thread.join(timeout=timeout)
         if self._lustre_thread:
             self._lustre_thread.join(timeout=timeout)
 
+    def set_leader(self, is_leader: bool) -> None:
+        """Update leadership state from a leader-election callback.
+
+        Called from a leader-election supervisor thread; safe to invoke
+        repeatedly and idempotent for the same target state. On the
+        leader→follower transition every per-resource gauge is cleared so
+        ``/metrics`` from a follower exposes only the leadership beacon and
+        process-level Prometheus defaults.
+        """
+
+        if not self._leader_election_enabled:
+            return
+        if is_leader:
+            self.is_leader.set(1.0)
+            self._is_leader_event.set()
+            LOGGER.info("Acquired leader-election lock; resuming Azure polling")
+        else:
+            self.is_leader.set(0.0)
+            self._is_leader_event.clear()
+            self._clear_resource_gauges()
+            LOGGER.info(
+                "Released leader-election lock; cleared resource gauges and paused polling"
+            )
+
+    def _clear_resource_gauges(self) -> None:
+        """Drop every per-resource label set so a follower exposes nothing."""
+
+        with self._metric_lock:
+            for gauge in (
+                self.instance_count,
+                self.capacity,
+                self.info,
+                self.lustre_ost_bytes_available,
+                self.lustre_ost_bytes_used,
+                self.lustre_ost_bytes_total,
+                self.lustre_ost_bytes_available_percent,
+                self.lustre_ost_bytes_used_percent,
+                self.lustre_client_read_ops,
+                self.lustre_client_read_throughput,
+                self.lustre_client_write_ops,
+                self.lustre_client_write_throughput,
+                self.lustre_ost_sample_timestamp,
+                self.lustre_ost_client_latency,
+                self.lustre_ost_client_ops,
+                self.lustre_ost_operation_sample_timestamp,
+                self.lustre_mdt_bytes_available,
+                self.lustre_mdt_bytes_used,
+                self.lustre_mdt_bytes_total,
+                self.lustre_mdt_bytes_available_percent,
+                self.lustre_mdt_bytes_used_percent,
+                self.lustre_mdt_files_free,
+                self.lustre_mdt_files_used,
+                self.lustre_mdt_files_total,
+                self.lustre_mdt_files_free_percent,
+                self.lustre_mdt_files_used_percent,
+                self.lustre_mdt_sample_timestamp,
+                self.lustre_mdt_client_latency,
+                self.lustre_mdt_client_ops,
+                self.lustre_mdt_operation_sample_timestamp,
+            ):
+                gauge.clear()
+            self._active_labelsets = set()
+            self._active_info_labelsets = set()
+            self._active_lustre_ost_labelsets = set()
+            self._active_lustre_ost_operation_labelsets = set()
+            self._active_lustre_mdt_labelsets = set()
+            self._active_lustre_mdt_operation_labelsets = set()
+            # Reset summary scalars so dashboards don't show stale totals on the follower.
+            self.vmss_total.set(0)
+            self.lustre_filesystem_total.set(0)
+            self.lustre_ost_total.set(0)
+            self.last_success_timestamp.set(0)
+            self.collection_duration.set(0)
+            self.lustre_last_success_timestamp.set(0)
+            self.lustre_collection_duration.set(0)
+
     def _poll_vmss_forever(self) -> None:
         while not self._stop_event.is_set():
+            if not self._is_leader_event.is_set():
+                # Follower: wait until either we become leader or the process stops.
+                self._wait_for_leadership_or_stop()
+                continue
             with suppress(Exception):
                 self._collect_vmss_once()
             self._stop_event.wait(self._poll_interval_seconds)
 
     def _poll_lustre_forever(self) -> None:
         while not self._stop_event.is_set():
+            if not self._is_leader_event.is_set():
+                self._wait_for_leadership_or_stop()
+                continue
             with suppress(Exception):
                 self.collect_lustre_once()
             self._stop_event.wait(self._lustre_poll_interval_seconds)
+
+    def _wait_for_leadership_or_stop(self) -> None:
+        """Block until leadership is acquired or shutdown is requested."""
+
+        # Poll the stop event so we don't sleep forever after shutdown when we
+        # never become the leader.
+        while not self._stop_event.is_set():
+            if self._is_leader_event.wait(timeout=1.0):
+                return
 
     def _collect_vmss_once(self) -> Sequence[VmssCount]:
         start = time.monotonic()
@@ -305,53 +577,225 @@ class VmssMetricsExporter:
     def _update_lustre_metrics(
         self,
         metrics: Sequence[ManagedLustreOstMetric],
+        operation_metrics: Sequence[ManagedLustreOstOperationMetric],
+        mdt_metrics: Sequence[ManagedLustreMdtMetric],
+        mdt_operation_metrics: Sequence[ManagedLustreMdtOperationMetric],
         *,
         remove_stale: bool,
     ) -> None:
         new_labelsets = {metric.label_values for metric in metrics}
+        new_operation_labelsets = {metric.label_values for metric in operation_metrics}
+        new_mdt_labelsets = {metric.label_values for metric in mdt_metrics}
+        new_mdt_operation_labelsets = {
+            metric.label_values for metric in mdt_operation_metrics
+        }
         with self._metric_lock:
             if remove_stale:
                 for stale in self._active_lustre_ost_labelsets - new_labelsets:
-                    self.lustre_ost_bytes_available.remove(*stale)
-                    self.lustre_ost_bytes_used.remove(*stale)
-                    self.lustre_ost_bytes_total.remove(*stale)
-                    self.lustre_ost_bytes_available_percent.remove(*stale)
-                    self.lustre_ost_bytes_used_percent.remove(*stale)
-                    self.lustre_ost_sample_timestamp.remove(*stale)
+                    for gauge in (
+                        self.lustre_ost_bytes_available,
+                        self.lustre_ost_bytes_used,
+                        self.lustre_ost_bytes_total,
+                        self.lustre_ost_bytes_available_percent,
+                        self.lustre_ost_bytes_used_percent,
+                        self.lustre_client_read_ops,
+                        self.lustre_client_read_throughput,
+                        self.lustre_client_write_ops,
+                        self.lustre_client_write_throughput,
+                        self.lustre_ost_sample_timestamp,
+                    ):
+                        with suppress(KeyError):
+                            gauge.remove(*stale)
+                for stale in self._active_lustre_ost_operation_labelsets - new_operation_labelsets:
+                    for gauge in (
+                        self.lustre_ost_client_latency,
+                        self.lustre_ost_client_ops,
+                        self.lustre_ost_operation_sample_timestamp,
+                    ):
+                        with suppress(KeyError):
+                            gauge.remove(*stale)
+                for stale in self._active_lustre_mdt_labelsets - new_mdt_labelsets:
+                    for gauge in (
+                        self.lustre_mdt_bytes_available,
+                        self.lustre_mdt_bytes_used,
+                        self.lustre_mdt_bytes_total,
+                        self.lustre_mdt_bytes_available_percent,
+                        self.lustre_mdt_bytes_used_percent,
+                        self.lustre_mdt_files_free,
+                        self.lustre_mdt_files_used,
+                        self.lustre_mdt_files_total,
+                        self.lustre_mdt_files_free_percent,
+                        self.lustre_mdt_files_used_percent,
+                        self.lustre_mdt_sample_timestamp,
+                    ):
+                        with suppress(KeyError):
+                            gauge.remove(*stale)
+                for stale in (
+                    self._active_lustre_mdt_operation_labelsets
+                    - new_mdt_operation_labelsets
+                ):
+                    for gauge in (
+                        self.lustre_mdt_client_latency,
+                        self.lustre_mdt_client_ops,
+                        self.lustre_mdt_operation_sample_timestamp,
+                    ):
+                        with suppress(KeyError):
+                            gauge.remove(*stale)
 
             for metric in metrics:
-                self.lustre_ost_bytes_available.labels(*metric.label_values).set(
-                    metric.bytes_available
+                self._set_or_remove_lustre_gauge(
+                    self.lustre_ost_bytes_available,
+                    metric.label_values,
+                    metric.bytes_available,
                 )
-                if metric.bytes_used is not None:
-                    self.lustre_ost_bytes_used.labels(*metric.label_values).set(metric.bytes_used)
-                else:
-                    with suppress(KeyError):
-                        self.lustre_ost_bytes_used.remove(*metric.label_values)
-                if metric.bytes_total is not None:
-                    self.lustre_ost_bytes_total.labels(*metric.label_values).set(metric.bytes_total)
-                else:
-                    with suppress(KeyError):
-                        self.lustre_ost_bytes_total.remove(*metric.label_values)
-                if metric.bytes_available_percent is not None:
-                    self.lustre_ost_bytes_available_percent.labels(*metric.label_values).set(
-                        metric.bytes_available_percent
-                    )
-                else:
-                    with suppress(KeyError):
-                        self.lustre_ost_bytes_available_percent.remove(*metric.label_values)
-                if metric.bytes_used_percent is not None:
-                    self.lustre_ost_bytes_used_percent.labels(*metric.label_values).set(
-                        metric.bytes_used_percent
-                    )
-                else:
-                    with suppress(KeyError):
-                        self.lustre_ost_bytes_used_percent.remove(*metric.label_values)
+                self._set_or_remove_lustre_gauge(
+                    self.lustre_ost_bytes_used,
+                    metric.label_values,
+                    metric.bytes_used,
+                )
+                self._set_or_remove_lustre_gauge(
+                    self.lustre_ost_bytes_total,
+                    metric.label_values,
+                    metric.bytes_total,
+                )
+                self._set_or_remove_lustre_gauge(
+                    self.lustre_ost_bytes_available_percent,
+                    metric.label_values,
+                    metric.bytes_available_percent,
+                )
+                self._set_or_remove_lustre_gauge(
+                    self.lustre_ost_bytes_used_percent,
+                    metric.label_values,
+                    metric.bytes_used_percent,
+                )
+                self._set_or_remove_lustre_gauge(
+                    self.lustre_client_read_ops,
+                    metric.label_values,
+                    metric.client_read_ops,
+                )
+                self._set_or_remove_lustre_gauge(
+                    self.lustre_client_read_throughput,
+                    metric.label_values,
+                    metric.client_read_throughput_bytes_per_second,
+                )
+                self._set_or_remove_lustre_gauge(
+                    self.lustre_client_write_ops,
+                    metric.label_values,
+                    metric.client_write_ops,
+                )
+                self._set_or_remove_lustre_gauge(
+                    self.lustre_client_write_throughput,
+                    metric.label_values,
+                    metric.client_write_throughput_bytes_per_second,
+                )
                 self.lustre_ost_sample_timestamp.labels(*metric.label_values).set(
+                    metric.sample_timestamp_seconds or time.time()
+                )
+
+            for metric in operation_metrics:
+                self._set_or_remove_lustre_gauge(
+                    self.lustre_ost_client_latency,
+                    metric.label_values,
+                    metric.client_latency_milliseconds,
+                )
+                self._set_or_remove_lustre_gauge(
+                    self.lustre_ost_client_ops,
+                    metric.label_values,
+                    metric.client_ops,
+                )
+                self.lustre_ost_operation_sample_timestamp.labels(*metric.label_values).set(
+                    metric.sample_timestamp_seconds or time.time()
+                )
+
+            for metric in mdt_metrics:
+                self._set_or_remove_lustre_gauge(
+                    self.lustre_mdt_bytes_available,
+                    metric.label_values,
+                    metric.bytes_available,
+                )
+                self._set_or_remove_lustre_gauge(
+                    self.lustre_mdt_bytes_used,
+                    metric.label_values,
+                    metric.bytes_used,
+                )
+                self._set_or_remove_lustre_gauge(
+                    self.lustre_mdt_bytes_total,
+                    metric.label_values,
+                    metric.bytes_total,
+                )
+                self._set_or_remove_lustre_gauge(
+                    self.lustre_mdt_bytes_available_percent,
+                    metric.label_values,
+                    metric.bytes_available_percent,
+                )
+                self._set_or_remove_lustre_gauge(
+                    self.lustre_mdt_bytes_used_percent,
+                    metric.label_values,
+                    metric.bytes_used_percent,
+                )
+                self._set_or_remove_lustre_gauge(
+                    self.lustre_mdt_files_free,
+                    metric.label_values,
+                    metric.files_free,
+                )
+                self._set_or_remove_lustre_gauge(
+                    self.lustre_mdt_files_used,
+                    metric.label_values,
+                    metric.files_used,
+                )
+                self._set_or_remove_lustre_gauge(
+                    self.lustre_mdt_files_total,
+                    metric.label_values,
+                    metric.files_total,
+                )
+                self._set_or_remove_lustre_gauge(
+                    self.lustre_mdt_files_free_percent,
+                    metric.label_values,
+                    metric.files_free_percent,
+                )
+                self._set_or_remove_lustre_gauge(
+                    self.lustre_mdt_files_used_percent,
+                    metric.label_values,
+                    metric.files_used_percent,
+                )
+                self.lustre_mdt_sample_timestamp.labels(*metric.label_values).set(
+                    metric.sample_timestamp_seconds or time.time()
+                )
+
+            for metric in mdt_operation_metrics:
+                self._set_or_remove_lustre_gauge(
+                    self.lustre_mdt_client_latency,
+                    metric.label_values,
+                    metric.client_latency_milliseconds,
+                )
+                self._set_or_remove_lustre_gauge(
+                    self.lustre_mdt_client_ops,
+                    metric.label_values,
+                    metric.client_ops,
+                )
+                self.lustre_mdt_operation_sample_timestamp.labels(*metric.label_values).set(
                     metric.sample_timestamp_seconds or time.time()
                 )
 
             if remove_stale:
                 self._active_lustre_ost_labelsets = new_labelsets
+                self._active_lustre_ost_operation_labelsets = new_operation_labelsets
+                self._active_lustre_mdt_labelsets = new_mdt_labelsets
+                self._active_lustre_mdt_operation_labelsets = new_mdt_operation_labelsets
             else:
                 self._active_lustre_ost_labelsets |= new_labelsets
+                self._active_lustre_ost_operation_labelsets |= new_operation_labelsets
+                self._active_lustre_mdt_labelsets |= new_mdt_labelsets
+                self._active_lustre_mdt_operation_labelsets |= new_mdt_operation_labelsets
+
+    @staticmethod
+    def _set_or_remove_lustre_gauge(
+        gauge: Gauge,
+        label_values: tuple[str, ...],
+        value: float | None,
+    ) -> None:
+        if value is not None:
+            gauge.labels(*label_values).set(value)
+        else:
+            with suppress(KeyError):
+                gauge.remove(*label_values)

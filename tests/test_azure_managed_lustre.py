@@ -6,18 +6,23 @@ import pytest
 
 from vmss_metrics_exporter.azure_managed_lustre import (
     AMLFS_FILESYSTEMS_QUERY,
-    OST_CAPACITY_METRICS,
+    LUSTRE_METRICS,
     AzureManagedLustreCollector,
     normalize_filesystem_row,
+    normalize_lustre_metrics_response,
     normalize_ost_bytes_available_response,
     normalize_ost_capacity_response,
+    normalize_ost_metrics_response,
     parse_iso_duration,
     summarize_lustre_metrics,
 )
 from vmss_metrics_exporter.models import (
     ManagedLustreCollectionResult,
     ManagedLustreFilesystem,
+    ManagedLustreMdtMetric,
+    ManagedLustreMdtOperationMetric,
     ManagedLustreOstMetric,
+    ManagedLustreOstOperationMetric,
 )
 
 
@@ -99,6 +104,254 @@ class FakeMetricsClient:
                         },
                     ],
                 }
+                ,
+                {
+                    "name": "OSTConnectedClients",
+                    "timeseries": [
+                        {
+                            "metadata_values": [
+                                {"name": {"value": "ostnum"}, "value": "0"},
+                            ],
+                            "data": [
+                                {"average": 5.0},
+                            ],
+                        },
+                    ],
+                },
+                {
+                    "name": "OSTFilesFree",
+                    "timeseries": [
+                        {
+                            "metadata_values": [
+                                {"name": {"value": "ostnum"}, "value": "0"},
+                            ],
+                            "data": [
+                                {"average": 9000.0},
+                            ],
+                        },
+                    ],
+                },
+                {
+                    "name": "OSTFilesUsed",
+                    "timeseries": [
+                        {
+                            "metadata_values": [
+                                {"name": {"value": "ostnum"}, "value": "0"},
+                            ],
+                            "data": [
+                                {"average": 1000.0},
+                            ],
+                        },
+                    ],
+                },
+                {
+                    "name": "OSTFilesTotal",
+                    "timeseries": [
+                        {
+                            "metadata_values": [
+                                {"name": {"value": "ostnum"}, "value": "0"},
+                            ],
+                            "data": [
+                                {"average": 10000.0},
+                            ],
+                        },
+                    ],
+                },
+                {
+                    "name": "OSTClientLatency",
+                    "timeseries": [
+                        {
+                            "metadata_values": [
+                                {"name": {"value": "ostnum"}, "value": "0"},
+                                {"name": {"value": "operation"}, "value": "read"},
+                            ],
+                            "data": [
+                                {"average": 12.5},
+                            ],
+                        },
+                    ],
+                },
+                {
+                    "name": "OSTClientOps",
+                    "timeseries": [
+                        {
+                            "metadata_values": [
+                                {"name": {"value": "ostnum"}, "value": "0"},
+                                {"name": {"value": "operation"}, "value": "read"},
+                            ],
+                            "data": [
+                                {"average": 42.0},
+                            ],
+                        },
+                    ],
+                },
+                {
+                    "name": "ClientReadLatencyTotal",
+                    "timeseries": [
+                        {
+                            "metadata_values": [
+                                {"name": {"value": "ostnum"}, "value": "0"},
+                            ],
+                            "data": [{"average": 100.0}],
+                        },
+                    ],
+                },
+                {
+                    "name": "ClientReadOps",
+                    "timeseries": [
+                        {
+                            "metadata_values": [
+                                {"name": {"value": "ostnum"}, "value": "0"},
+                            ],
+                            "data": [{"average": 200.0}],
+                        },
+                    ],
+                },
+                {
+                    "name": "ClientReadThroughput",
+                    "timeseries": [
+                        {
+                            "metadata_values": [
+                                {"name": {"value": "ostnum"}, "value": "0"},
+                            ],
+                            "data": [{"average": 300.0}],
+                        },
+                    ],
+                },
+                {
+                    "name": "ClientWriteLatencyTotal",
+                    "timeseries": [
+                        {
+                            "metadata_values": [
+                                {"name": {"value": "ostnum"}, "value": "0"},
+                            ],
+                            "data": [{"average": 400.0}],
+                        },
+                    ],
+                },
+                {
+                    "name": "ClientWriteOps",
+                    "timeseries": [
+                        {
+                            "metadata_values": [
+                                {"name": {"value": "ostnum"}, "value": "0"},
+                            ],
+                            "data": [{"average": 500.0}],
+                        },
+                    ],
+                },
+                {
+                    "name": "ClientWriteThroughput",
+                    "timeseries": [
+                        {
+                            "metadata_values": [
+                                {"name": {"value": "ostnum"}, "value": "0"},
+                            ],
+                            "data": [{"average": 600.0}],
+                        },
+                    ],
+                },
+                {
+                    "name": "MDTBytesAvailable",
+                    "timeseries": [
+                        {
+                            "metadata_values": [
+                                {"name": {"value": "mdtnum"}, "value": "0"},
+                            ],
+                            "data": [{"average": 700.0}],
+                        },
+                    ],
+                },
+                {
+                    "name": "MDTBytesUsed",
+                    "timeseries": [
+                        {
+                            "metadata_values": [
+                                {"name": {"value": "mdtnum"}, "value": "0"},
+                            ],
+                            "data": [{"average": 300.0}],
+                        },
+                    ],
+                },
+                {
+                    "name": "MDTBytesTotal",
+                    "timeseries": [
+                        {
+                            "metadata_values": [
+                                {"name": {"value": "mdtnum"}, "value": "0"},
+                            ],
+                            "data": [{"average": 1000.0}],
+                        },
+                    ],
+                },
+                {
+                    "name": "MDTConnectedClients",
+                    "timeseries": [
+                        {
+                            "metadata_values": [
+                                {"name": {"value": "mdtnum"}, "value": "0"},
+                            ],
+                            "data": [{"average": 7.0}],
+                        },
+                    ],
+                },
+                {
+                    "name": "MDTFilesFree",
+                    "timeseries": [
+                        {
+                            "metadata_values": [
+                                {"name": {"value": "mdtnum"}, "value": "0"},
+                            ],
+                            "data": [{"average": 80.0}],
+                        },
+                    ],
+                },
+                {
+                    "name": "MDTFilesUsed",
+                    "timeseries": [
+                        {
+                            "metadata_values": [
+                                {"name": {"value": "mdtnum"}, "value": "0"},
+                            ],
+                            "data": [{"average": 20.0}],
+                        },
+                    ],
+                },
+                {
+                    "name": "MDTFilesTotal",
+                    "timeseries": [
+                        {
+                            "metadata_values": [
+                                {"name": {"value": "mdtnum"}, "value": "0"},
+                            ],
+                            "data": [{"average": 100.0}],
+                        },
+                    ],
+                },
+                {
+                    "name": "MDTClientLatency",
+                    "timeseries": [
+                        {
+                            "metadata_values": [
+                                {"name": {"value": "mdtnum"}, "value": "0"},
+                                {"name": {"value": "operation"}, "value": "open"},
+                            ],
+                            "data": [{"average": 1.5}],
+                        },
+                    ],
+                },
+                {
+                    "name": "MDTClientOps",
+                    "timeseries": [
+                        {
+                            "metadata_values": [
+                                {"name": {"value": "mdtnum"}, "value": "0"},
+                                {"name": {"value": "operation"}, "value": "open"},
+                            ],
+                            "data": [{"average": 9.0}],
+                        },
+                    ],
+                },
             ]
         }
 
@@ -228,6 +481,39 @@ def test_normalize_ost_capacity_response_groups_metric_names_by_ostnum() -> None
                         }
                     ],
                 },
+                {
+                    "name": "OSTFilesFree",
+                    "timeseries": [
+                        {
+                            "metadata_values": [
+                                {"name": {"value": "ostnum"}, "value": "1"},
+                            ],
+                            "data": [{"average": 80.0}],
+                        }
+                    ],
+                },
+                {
+                    "name": "OSTFilesUsed",
+                    "timeseries": [
+                        {
+                            "metadata_values": [
+                                {"name": {"value": "ostnum"}, "value": "1"},
+                            ],
+                            "data": [{"average": 20.0}],
+                        }
+                    ],
+                },
+                {
+                    "name": "OSTFilesTotal",
+                    "timeseries": [
+                        {
+                            "metadata_values": [
+                                {"name": {"value": "ostnum"}, "value": "1"},
+                            ],
+                            "data": [{"average": 100.0}],
+                        }
+                    ],
+                },
             ]
         },
     )
@@ -238,6 +524,134 @@ def test_normalize_ost_capacity_response_groups_metric_names_by_ostnum() -> None
     assert metrics[0].bytes_total == 1000.0
     assert metrics[0].bytes_available_percent == 25.0
     assert metrics[0].bytes_used_percent == 75.0
+    assert not hasattr(metrics[0], "files_free")
+
+
+def test_normalize_ost_metrics_response_preserves_operation_dimension() -> None:
+    filesystem = ManagedLustreFilesystem(
+        "sub-a",
+        "rg-a",
+        "lustre-a",
+        "/subscriptions/sub-a/resourceGroups/rg-a/providers/"
+        "Microsoft.StorageCache/amlFilesystems/lustre-a",
+        "westus3",
+    )
+
+    ost_metrics, operation_metrics = normalize_ost_metrics_response(
+        filesystem,
+        {
+            "metrics": [
+                {
+                    "name": "OSTClientLatency",
+                    "timeseries": [
+                        {
+                            "metadata_values": [
+                                {"name": {"value": "ostnum"}, "value": "1"},
+                                {"name": {"value": "operation"}, "value": "read"},
+                            ],
+                            "data": [{"average": 10.0}],
+                        },
+                        {
+                            "metadata_values": [
+                                {"name": {"value": "ostnum"}, "value": "1"},
+                                {"name": {"value": "operation"}, "value": "write"},
+                            ],
+                            "data": [{"average": 20.0}],
+                        },
+                    ],
+                },
+                {
+                    "name": "OSTClientOps",
+                    "timeseries": [
+                        {
+                            "metadata_values": [
+                                {"name": {"value": "ostnum"}, "value": "1"},
+                                {"name": {"value": "operation"}, "value": "read"},
+                            ],
+                            "data": [{"average": 30.0}],
+                        },
+                    ],
+                },
+            ]
+        },
+    )
+
+    assert ost_metrics == []
+    assert len(operation_metrics) == 2
+    read_metric = next(metric for metric in operation_metrics if metric.operation == "read")
+    write_metric = next(metric for metric in operation_metrics if metric.operation == "write")
+    assert read_metric.client_latency_milliseconds == 10.0
+    assert read_metric.client_ops == 30.0
+    assert write_metric.client_latency_milliseconds == 20.0
+    assert write_metric.client_ops is None
+
+
+def test_normalize_lustre_metrics_response_groups_ost_client_and_mdt_metrics() -> None:
+    filesystem = ManagedLustreFilesystem(
+        "sub-a",
+        "rg-a",
+        "lustre-a",
+        "/subscriptions/sub-a/resourceGroups/rg-a/providers/"
+        "Microsoft.StorageCache/amlFilesystems/lustre-a",
+        "westus3",
+    )
+
+    ost_metrics, _ost_operations, mdt_metrics, mdt_operations = (
+        normalize_lustre_metrics_response(filesystem, FakeMetricsClient().query_resource("", []))
+    )
+
+    assert len(ost_metrics) == 1
+    assert ost_metrics[0].client_read_ops == 200.0
+    assert ost_metrics[0].client_read_throughput_bytes_per_second == 300.0
+    assert ost_metrics[0].client_write_ops == 500.0
+    assert ost_metrics[0].client_write_throughput_bytes_per_second == 600.0
+    assert len(mdt_metrics) == 1
+    assert mdt_metrics[0].label_values == ("sub-a", "rg-a", "lustre-a", "westus3", "0")
+    assert mdt_metrics[0].bytes_available == 700.0
+    assert mdt_metrics[0].bytes_used == 300.0
+    assert mdt_metrics[0].bytes_total == 1000.0
+    assert mdt_metrics[0].bytes_available_percent == 70.0
+    assert mdt_metrics[0].files_free == 80.0
+    assert mdt_metrics[0].files_used == 20.0
+    assert mdt_metrics[0].files_total == 100.0
+    assert len(mdt_operations) == 1
+    assert mdt_operations[0].operation == "open"
+    assert mdt_operations[0].client_latency_milliseconds == 1.5
+    assert mdt_operations[0].client_ops == 9.0
+
+
+def test_normalize_lustre_metrics_response_accepts_dimensionless_aggregate_series() -> None:
+    filesystem = ManagedLustreFilesystem(
+        "sub-a",
+        "rg-a",
+        "lustre-a",
+        "/subscriptions/sub-a/resourceGroups/rg-a/providers/"
+        "Microsoft.StorageCache/amlFilesystems/lustre-a",
+        "westus3",
+    )
+
+    ost_metrics, ost_operations, mdt_metrics, mdt_operations = normalize_lustre_metrics_response(
+        filesystem,
+        {
+            "metrics": [
+                {"name": "OSTBytesAvailable", "timeseries": [{"data": [{"average": 123.0}]}]},
+                {"name": "OSTClientOps", "timeseries": [{"data": [{"average": 42.0}]}]},
+                {"name": "MDTBytesAvailable", "timeseries": [{"data": [{"average": 456.0}]}]},
+                {"name": "MDTClientOps", "timeseries": [{"data": [{"average": 84.0}]}]},
+            ]
+        },
+    )
+
+    assert ost_metrics[0].ostnum == "all"
+    assert ost_metrics[0].bytes_available == 123.0
+    assert ost_operations[0].ostnum == "all"
+    assert ost_operations[0].operation == "all"
+    assert ost_operations[0].client_ops == 42.0
+    assert mdt_metrics[0].mdtnum == "all"
+    assert mdt_metrics[0].bytes_available == 456.0
+    assert mdt_operations[0].mdtnum == "all"
+    assert mdt_operations[0].operation == "all"
+    assert mdt_operations[0].client_ops == 84.0
 
 
 def test_collector_discovers_and_collects_metrics(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -264,7 +678,19 @@ def test_collector_discovers_and_collects_metrics(monkeypatch: pytest.MonkeyPatc
     assert result.metrics[0].bytes_available == 123.0
     assert result.metrics[0].bytes_used == 877.0
     assert result.metrics[0].bytes_total == 1000.0
-    assert metrics_client.metric_names == [OST_CAPACITY_METRICS]
+    assert result.metrics[0].client_read_ops == 200.0
+    assert result.metrics[0].client_write_throughput_bytes_per_second == 600.0
+    assert len(result.operation_metrics) == 1
+    assert result.operation_metrics[0].operation == "read"
+    assert result.operation_metrics[0].client_latency_milliseconds == 12.5
+    assert result.operation_metrics[0].client_ops == 42.0
+    assert len(result.mdt_metrics) == 1
+    assert result.mdt_metrics[0].bytes_available == 700.0
+    assert result.mdt_metrics[0].files_total == 100.0
+    assert len(result.mdt_operation_metrics) == 1
+    assert result.mdt_operation_metrics[0].operation == "open"
+    assert result.mdt_operation_metrics[0].client_ops == 9.0
+    assert metrics_client.metric_names == [list(LUSTRE_METRICS)]
 
 
 def test_collector_isolates_per_filesystem_metric_failures(
@@ -346,8 +772,75 @@ def test_summarize_lustre_metrics_with_filesystem_but_no_samples() -> None:
         ManagedLustreCollectionResult(metrics=(), filesystem_count=1)
     )
 
-    assert "# no OST capacity samples returned" in summary
+    assert "# no Lustre metric samples returned" in summary
     assert "OSTBytesAvailable" not in summary
+
+
+def test_summarize_lustre_metrics_includes_operation_metrics() -> None:
+    summary = summarize_lustre_metrics(
+        ManagedLustreCollectionResult(
+            metrics=(),
+            filesystem_count=1,
+            operation_metrics=(
+                ManagedLustreOstOperationMetric(
+                    "sub-a",
+                    "rg-a",
+                    "lustre-a",
+                    "westus3",
+                    "0",
+                    "read",
+                    client_latency_milliseconds=12.5,
+                    client_ops=42.0,
+                ),
+            ),
+        )
+    )
+
+    assert "client_latency_milliseconds" in summary
+    assert "client_ops" in summary
+    assert "read" in summary
+    assert "# no Lustre metric samples returned" not in summary
+
+
+def test_summarize_lustre_metrics_includes_mdt_metrics() -> None:
+    summary = summarize_lustre_metrics(
+        ManagedLustreCollectionResult(
+            metrics=(),
+            filesystem_count=1,
+            mdt_metrics=(
+                ManagedLustreMdtMetric(
+                    "sub-a",
+                    "rg-a",
+                    "lustre-a",
+                    "westus3",
+                    "0",
+                    bytes_available=700.0,
+                    bytes_used=300.0,
+                    bytes_total=1000.0,
+                    files_free=80.0,
+                    files_used=20.0,
+                    files_total=100.0,
+                ),
+            ),
+            mdt_operation_metrics=(
+                ManagedLustreMdtOperationMetric(
+                    "sub-a",
+                    "rg-a",
+                    "lustre-a",
+                    "westus3",
+                    "0",
+                    "open",
+                    client_latency_milliseconds=1.5,
+                    client_ops=9.0,
+                ),
+            ),
+        )
+    )
+
+    assert "mdtnum" in summary
+    assert "700.0" in summary
+    assert "open" in summary
+    assert "# no Lustre metric samples returned" not in summary
 
 
 def test_summarize_lustre_metrics_with_no_filesystems() -> None:

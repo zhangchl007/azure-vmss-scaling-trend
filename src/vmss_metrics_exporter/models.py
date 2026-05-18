@@ -68,9 +68,13 @@ class ManagedLustreOstMetric:
     filesystem_name: str
     location: str
     ostnum: str
-    bytes_available: float
+    bytes_available: float | None = None
     bytes_used: float | None = None
     bytes_total: float | None = None
+    client_read_ops: float | None = None
+    client_read_throughput_bytes_per_second: float | None = None
+    client_write_ops: float | None = None
+    client_write_throughput_bytes_per_second: float | None = None
     sample_timestamp_seconds: float | None = None
 
     @property
@@ -89,7 +93,7 @@ class ManagedLustreOstMetric:
     def bytes_available_percent(self) -> float | None:
         """Return available capacity percentage when total bytes are known."""
 
-        if self.bytes_total is None or self.bytes_total <= 0:
+        if self.bytes_available is None or self.bytes_total is None or self.bytes_total <= 0:
             return None
         return (self.bytes_available / self.bytes_total) * 100
 
@@ -101,6 +105,123 @@ class ManagedLustreOstMetric:
             return None
         return (self.bytes_used / self.bytes_total) * 100
 
+@dataclass(frozen=True, slots=True)
+class ManagedLustreOstOperationMetric:
+    """Normalized Azure Managed Lustre OST operation metric sample."""
+
+    subscription_id: str
+    resource_group: str
+    filesystem_name: str
+    location: str
+    ostnum: str
+    operation: str
+    client_latency_milliseconds: float | None = None
+    client_ops: float | None = None
+    sample_timestamp_seconds: float | None = None
+
+    @property
+    def label_values(self) -> tuple[str, str, str, str, str, str]:
+        """Return labels for operation-dimension Lustre OST metrics."""
+
+        return (
+            self.subscription_id,
+            self.resource_group,
+            self.filesystem_name,
+            self.location,
+            self.ostnum,
+            self.operation,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ManagedLustreMdtMetric:
+    """Normalized Azure Managed Lustre MDT metric sample ready for Prometheus."""
+
+    subscription_id: str
+    resource_group: str
+    filesystem_name: str
+    location: str
+    mdtnum: str
+    bytes_available: float | None = None
+    bytes_used: float | None = None
+    bytes_total: float | None = None
+    files_free: float | None = None
+    files_used: float | None = None
+    files_total: float | None = None
+    sample_timestamp_seconds: float | None = None
+
+    @property
+    def label_values(self) -> tuple[str, str, str, str, str]:
+        """Return labels for per-MDT Lustre metrics."""
+
+        return (
+            self.subscription_id,
+            self.resource_group,
+            self.filesystem_name,
+            self.location,
+            self.mdtnum,
+        )
+
+    @property
+    def bytes_available_percent(self) -> float | None:
+        """Return available MDT capacity percentage when total bytes are known."""
+
+        if self.bytes_available is None or self.bytes_total is None or self.bytes_total <= 0:
+            return None
+        return (self.bytes_available / self.bytes_total) * 100
+
+    @property
+    def bytes_used_percent(self) -> float | None:
+        """Return used MDT capacity percentage when used and total bytes are known."""
+
+        if self.bytes_used is None or self.bytes_total is None or self.bytes_total <= 0:
+            return None
+        return (self.bytes_used / self.bytes_total) * 100
+
+    @property
+    def files_free_percent(self) -> float | None:
+        """Return free MDT inode/file percentage when total files are known."""
+
+        if self.files_free is None or self.files_total is None or self.files_total <= 0:
+            return None
+        return (self.files_free / self.files_total) * 100
+
+    @property
+    def files_used_percent(self) -> float | None:
+        """Return used MDT inode/file percentage when used and total files are known."""
+
+        if self.files_used is None or self.files_total is None or self.files_total <= 0:
+            return None
+        return (self.files_used / self.files_total) * 100
+
+
+@dataclass(frozen=True, slots=True)
+class ManagedLustreMdtOperationMetric:
+    """Normalized Azure Managed Lustre MDT operation metric sample."""
+
+    subscription_id: str
+    resource_group: str
+    filesystem_name: str
+    location: str
+    mdtnum: str
+    operation: str
+    client_latency_milliseconds: float | None = None
+    client_ops: float | None = None
+    sample_timestamp_seconds: float | None = None
+
+    @property
+    def label_values(self) -> tuple[str, str, str, str, str, str]:
+        """Return labels for operation-dimension Lustre MDT metrics."""
+
+        return (
+            self.subscription_id,
+            self.resource_group,
+            self.filesystem_name,
+            self.location,
+            self.mdtnum,
+            self.operation,
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class ManagedLustreCollectionResult:
@@ -109,3 +230,6 @@ class ManagedLustreCollectionResult:
     metrics: tuple[ManagedLustreOstMetric, ...]
     filesystem_count: int
     error_count: int = 0
+    operation_metrics: tuple[ManagedLustreOstOperationMetric, ...] = ()
+    mdt_metrics: tuple[ManagedLustreMdtMetric, ...] = ()
+    mdt_operation_metrics: tuple[ManagedLustreMdtOperationMetric, ...] = ()

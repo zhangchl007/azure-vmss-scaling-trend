@@ -1,8 +1,8 @@
 # Azure VMSS and Managed Lustre Metrics Exporter
 
-Python Prometheus exporter that periodically inventories every Azure VM Scale Set (VMSS) and Azure Managed Lustre filesystem in one or more subscriptions. It exposes VMSS names, desired capacity, actual child-VM counts, and Managed Lustre OST available/used/total capacity as Prometheus gauges.
+Python Prometheus exporter that periodically inventories every Azure VM Scale Set (VMSS) and Azure Managed Lustre filesystem in one or more subscriptions. It exposes VMSS names, desired capacity, actual child-VM counts, and a focused key set of Managed Lustre OST/MDT capacity, metadata file capacity, latency, operations, and throughput samples as Prometheus gauges.
 
-Azure Monitor does not provide a simple native subscription-wide metric for "VMSS name and current instance count". This exporter treats the problem as Azure inventory/state sampling: it uses **Azure Resource Graph** to query all configured subscriptions in one request pattern and exposes the result as cached gauges on `/metrics`. For Azure Managed Lustre, Resource Graph discovers all `Microsoft.StorageCache/amlFilesystems` resources and Azure Monitor provides per-filesystem `OSTBytesAvailable`, `OSTBytesUsed`, and `OSTBytesTotal` samples.
+Azure Monitor does not provide a simple native subscription-wide metric for "VMSS name and current instance count". This exporter treats the problem as Azure inventory/state sampling: it uses **Azure Resource Graph** to query all configured subscriptions in one request pattern and exposes the result as cached gauges on `/metrics`. For Azure Managed Lustre, Resource Graph discovers all `Microsoft.StorageCache/amlFilesystems` resources and Azure Monitor provides per-filesystem OST, MDT, and client read/write samples.
 
 ## Repo layout
 
@@ -43,7 +43,27 @@ Azure Monitor does not provide a simple native subscription-wide metric for "VMS
 | `azure_managed_lustre_ost_bytes_total` | Gauge | Azure Managed Lustre `OSTBytesTotal` metric in bytes, one series per filesystem OST when Azure Monitor returns it. |
 | `azure_managed_lustre_ost_bytes_available_percent` | Gauge | Derived available percentage: `OSTBytesAvailable / OSTBytesTotal * 100`. Use this for normalized capacity alerts. |
 | `azure_managed_lustre_ost_bytes_used_percent` | Gauge | Derived used percentage: `OSTBytesUsed / OSTBytesTotal * 100`. |
+| `azure_managed_lustre_ost_client_latency_milliseconds` | Gauge | Azure Managed Lustre `OSTClientLatency`, labelled by OST and operation. |
+| `azure_managed_lustre_ost_client_ops` | Gauge | Azure Managed Lustre `OSTClientOps`, labelled by OST and operation. |
+| `azure_managed_lustre_client_read_ops` | Gauge | Azure Managed Lustre `ClientReadOps`, labelled by OST. |
+| `azure_managed_lustre_client_read_throughput_bytes_per_second` | Gauge | Azure Managed Lustre `ClientReadThroughput`, labelled by OST. |
+| `azure_managed_lustre_client_write_ops` | Gauge | Azure Managed Lustre `ClientWriteOps`, labelled by OST. |
+| `azure_managed_lustre_client_write_throughput_bytes_per_second` | Gauge | Azure Managed Lustre `ClientWriteThroughput`, labelled by OST. |
 | `azure_managed_lustre_ost_sample_timestamp_seconds` | Gauge | Unix timestamp of the Azure Monitor sample backing each OST bytes-available series. Use this for stale-sample alerts. |
+| `azure_managed_lustre_mdt_bytes_available` | Gauge | Azure Managed Lustre `MDTBytesAvailable` metric in bytes, one series per filesystem MDT. |
+| `azure_managed_lustre_mdt_bytes_used` | Gauge | Azure Managed Lustre `MDTBytesUsed` metric in bytes, one series per filesystem MDT. |
+| `azure_managed_lustre_mdt_bytes_total` | Gauge | Azure Managed Lustre `MDTBytesTotal` metric in bytes, one series per filesystem MDT. |
+| `azure_managed_lustre_mdt_bytes_available_percent` | Gauge | Derived available percentage: `MDTBytesAvailable / MDTBytesTotal * 100`. |
+| `azure_managed_lustre_mdt_bytes_used_percent` | Gauge | Derived used percentage: `MDTBytesUsed / MDTBytesTotal * 100`. |
+| `azure_managed_lustre_mdt_files_free` | Gauge | Azure Managed Lustre `MDTFilesFree` metric, one series per filesystem MDT. |
+| `azure_managed_lustre_mdt_files_used` | Gauge | Azure Managed Lustre `MDTFilesUsed` metric, one series per filesystem MDT when Azure Monitor returns it. |
+| `azure_managed_lustre_mdt_files_total` | Gauge | Azure Managed Lustre `MDTFilesTotal` metric, one series per filesystem MDT. |
+| `azure_managed_lustre_mdt_files_free_percent` | Gauge | Derived free percentage: `MDTFilesFree / MDTFilesTotal * 100`. |
+| `azure_managed_lustre_mdt_files_used_percent` | Gauge | Derived used percentage: `MDTFilesUsed / MDTFilesTotal * 100`. |
+| `azure_managed_lustre_mdt_sample_timestamp_seconds` | Gauge | Unix timestamp of the Azure Monitor sample backing each MDT metric series. |
+| `azure_managed_lustre_mdt_client_latency_milliseconds` | Gauge | Azure Managed Lustre `MDTClientLatency`, labelled by MDT and operation. |
+| `azure_managed_lustre_mdt_client_ops` | Gauge | Azure Managed Lustre `MDTClientOps`, labelled by MDT and operation. |
+| `azure_managed_lustre_mdt_operation_sample_timestamp_seconds` | Gauge | Unix timestamp of the Azure Monitor sample backing each MDT operation metric series. |
 | `azure_managed_lustre_filesystem_total` | Gauge | Number of Azure Managed Lustre filesystems discovered in the latest collection. |
 | `azure_managed_lustre_ost_total` | Gauge | Number of Azure Managed Lustre OST series observed in the latest collection. |
 | `azure_managed_lustre_last_success_timestamp_seconds` | Gauge | Unix timestamp of the last successful Managed Lustre collection. |
@@ -65,13 +85,32 @@ Labels on `azure_vmss_info` (all five above, **plus**):
 
 The info-metric pattern keeps `vm_size` *out of the count gauge labelsets*, so resizing a VMSS does not break the historical time series of `azure_vmss_instance_count` / `azure_vmss_capacity`. Example PromQL to show instance counts with VM size:
 
-Labels on Managed Lustre per-OST capacity metrics:
+Labels on Managed Lustre per-OST metrics:
 
 - `subscription_id`
 - `resource_group`
 - `filesystem_name`
 - `location`
-- `ostnum` — Azure Monitor `ostnum` dimension from the OST capacity metrics.
+- `ostnum` — Azure Monitor `ostnum` dimension from key OST metrics such as bytes, client throughput, and client operations.
+  When Azure Monitor returns an aggregate series without this dimension, the exporter uses `ostnum="all"`.
+
+Additional labels on operation-dimension Managed Lustre metrics such as `azure_managed_lustre_ost_client_latency_milliseconds` and `azure_managed_lustre_ost_client_ops`:
+
+- `operation` — Azure Monitor operation dimension (for example, `read` / `write` when emitted by Azure Monitor).
+
+Labels on Managed Lustre per-MDT metrics:
+
+- `subscription_id`
+- `resource_group`
+- `filesystem_name`
+- `location`
+- `mdtnum` — Azure Monitor `mdtnum` dimension from key MDT metrics such as bytes and file counts.
+  When Azure Monitor returns an aggregate series without this dimension, the exporter uses `mdtnum="all"`.
+
+Additional labels on operation-dimension MDT metrics such as `azure_managed_lustre_mdt_client_latency_milliseconds` and `azure_managed_lustre_mdt_client_ops`:
+
+- `operation` — Azure Monitor operation dimension for MDT operations.
+  When Azure Monitor returns an aggregate operation series without this dimension, the exporter uses `operation="all"`.
 
 ```promql
 azure_vmss_instance_count
@@ -106,7 +145,7 @@ The exporter reads configuration from environment variables (and optionally a lo
 | `ARG_PAGE_SIZE` | _(library default)_ | Optional Resource Graph page size. |
 | `ARG_MAX_RETRIES` | _(library default)_ | Optional retry count for transient errors. |
 | `ARG_RETRY_BASE_DELAY_SECONDS` | _(library default)_ | Optional retry backoff base. |
-| `ENABLE_MANAGED_LUSTRE_METRICS` | `true` | Discover all Azure Managed Lustre filesystems and query Azure Monitor for `OSTBytesAvailable`, `OSTBytesUsed`, and `OSTBytesTotal`. |
+| `ENABLE_MANAGED_LUSTRE_METRICS` | `true` | Discover all Azure Managed Lustre filesystems and query Azure Monitor for supported OST, client read/write, and MDT metrics. |
 | `LUSTRE_POLL_INTERVAL_SECONDS` | `60` | How often to query Azure Monitor for Managed Lustre metrics. This is intentionally independent from VMSS inventory polling for faster capacity alerting. |
 | `LUSTRE_METRICS_LOOKBACK_MINUTES` | `15` | Azure Monitor lookback window used to find the latest non-null OST sample. |
 | `LUSTRE_METRICS_INTERVAL` | `PT1M` | Azure Monitor metric granularity for Managed Lustre queries. |
@@ -361,7 +400,7 @@ Expected: at least one line ending with `up` and an empty `lastError`. The sampl
 Managed Lustre capacity alerts should use a faster path than VMSS inventory:
 
 - **Exporter poll**: `LUSTRE_POLL_INTERVAL_SECONDS=60` by default. VMSS still uses `POLL_INTERVAL_SECONDS=300`.
-- **Azure Monitor metric granularity**: `LUSTRE_METRICS_INTERVAL=PT1M` because the OST capacity metrics support one-minute samples.
+- **Azure Monitor metric granularity**: `LUSTRE_METRICS_INTERVAL=PT1M` because Managed Lustre OST metrics support one-minute samples.
 - **Prometheus scrape**: `deploy/ama-metrics-settings-configmap-v1.yaml` uses `scrape_interval: 30s`.
 - **Alert freshness**: use both exporter freshness and Azure Monitor sample timestamp freshness.
 
@@ -470,6 +509,20 @@ azure_managed_lustre_ost_bytes_available_percent
 # Managed Lustre OST used and total bytes by filesystem and OST
 azure_managed_lustre_ost_bytes_used
 azure_managed_lustre_ost_bytes_total
+
+# Managed Lustre OST client read/write workload metrics by filesystem and OST
+azure_managed_lustre_client_read_ops
+azure_managed_lustre_client_read_throughput_bytes_per_second
+azure_managed_lustre_client_write_ops
+azure_managed_lustre_client_write_throughput_bytes_per_second
+
+# Managed Lustre MDT capacity and file metrics by filesystem and MDT
+azure_managed_lustre_mdt_bytes_available_percent
+azure_managed_lustre_mdt_files_free_percent
+
+# Managed Lustre MDT operation latency/ops by operation
+azure_managed_lustre_mdt_client_latency_milliseconds
+azure_managed_lustre_mdt_client_ops
 
 # Total Managed Lustre bytes available by filesystem
 sum by (subscription_id, resource_group, filesystem_name) (

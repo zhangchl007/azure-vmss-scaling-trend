@@ -64,3 +64,56 @@ def test_lustre_boolean_setting_rejects_invalid_value(
 
     with pytest.raises(ValueError, match="ENABLE_MANAGED_LUSTRE_METRICS"):
         load_settings()
+
+
+def test_leader_election_defaults_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AZURE_SUBSCRIPTION_IDS", "sub-a")
+    monkeypatch.delenv("LEADER_ELECTION_ENABLED", raising=False)
+    monkeypatch.delenv("POD_NAME", raising=False)
+    monkeypatch.delenv("POD_NAMESPACE", raising=False)
+
+    settings = load_settings()
+
+    assert settings.leader_election_enabled is False
+    assert settings.leader_election_lock_name == "vmss-metrics-exporter"
+    assert settings.leader_election_namespace == "default"
+    assert settings.leader_election_identity  # falls back to hostname, must be non-empty
+    assert settings.leader_election_lease_duration_seconds == 15
+    assert settings.leader_election_renew_deadline_seconds == 10
+    assert settings.leader_election_retry_period_seconds == 2
+
+
+def test_leader_election_uses_downward_api_envs(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AZURE_SUBSCRIPTION_IDS", "sub-a")
+    monkeypatch.setenv("LEADER_ELECTION_ENABLED", "true")
+    monkeypatch.setenv("POD_NAME", "vmss-metrics-exporter-abc-123")
+    monkeypatch.setenv("POD_NAMESPACE", "observability")
+
+    settings = load_settings()
+
+    assert settings.leader_election_enabled is True
+    assert settings.leader_election_namespace == "observability"
+    assert settings.leader_election_identity == "vmss-metrics-exporter-abc-123"
+
+
+def test_leader_election_rejects_renew_deadline_not_less_than_lease(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AZURE_SUBSCRIPTION_IDS", "sub-a")
+    monkeypatch.setenv("LEADER_ELECTION_LEASE_DURATION_SECONDS", "10")
+    monkeypatch.setenv("LEADER_ELECTION_RENEW_DEADLINE_SECONDS", "10")
+
+    with pytest.raises(ValueError, match="RENEW_DEADLINE"):
+        load_settings()
+
+
+def test_leader_election_rejects_retry_period_not_less_than_renew(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AZURE_SUBSCRIPTION_IDS", "sub-a")
+    monkeypatch.setenv("LEADER_ELECTION_LEASE_DURATION_SECONDS", "15")
+    monkeypatch.setenv("LEADER_ELECTION_RENEW_DEADLINE_SECONDS", "5")
+    monkeypatch.setenv("LEADER_ELECTION_RETRY_PERIOD_SECONDS", "5")
+
+    with pytest.raises(ValueError, match="RETRY_PERIOD"):
+        load_settings()

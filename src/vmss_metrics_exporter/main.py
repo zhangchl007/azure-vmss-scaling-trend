@@ -23,6 +23,11 @@ from .azure_resource_graph import (
 )
 from .collector import VmssMetricsExporter
 from .config import Settings, load_settings
+from .leader_election import (
+    LeaderElectionConfig,
+    LeaderElectionRunner,
+    load_incluster_kube_config,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -55,7 +60,7 @@ def main(argv: list[str] | None = None) -> int:
             print(summarize_counts(collector.collect()))
             if lustre_collector is not None:
                 print()
-                print("Azure Managed Lustre OSTBytesAvailable")
+                print("Azure Managed Lustre metrics")
                 print(summarize_lustre_metrics(lustre_collector.collect()))
             return 0
 
@@ -64,19 +69,24 @@ def main(argv: list[str] | None = None) -> int:
             collect_lustre_metrics=lustre_collector.collect if lustre_collector else None,
             poll_interval_seconds=settings.poll_interval_seconds,
             lustre_poll_interval_seconds=settings.lustre_poll_interval_seconds,
+            leader_election_enabled=settings.leader_election_enabled,
         )
+        leader_election_runner = _start_leader_election(settings, exporter)
         start_http_server(settings.port, addr=settings.host)
         LOGGER.info(
             "VMSS metrics exporter listening on http://%s:%s/metrics; VMSS polling every %ss; "
-            "Managed Lustre metrics %s%s",
+            "Managed Lustre metrics %s%s; leader election %s",
             settings.host,
             settings.port,
             settings.poll_interval_seconds,
             "enabled" if lustre_collector else "disabled",
             f" every {settings.lustre_poll_interval_seconds}s" if lustre_collector else "",
+            "enabled" if leader_election_runner else "disabled",
         )
         exporter.start()
         _wait_for_shutdown_signal()
+        if leader_election_runner is not None:
+            leader_election_runner.release()
         exporter.stop()
         return 0
     except KeyboardInterrupt:
@@ -104,6 +114,46 @@ def _create_lustre_collector(
         max_retries=settings.arg_max_retries,
         retry_base_delay_seconds=settings.arg_retry_base_delay_seconds,
     )
+
+
+def _start_leader_election(
+    settings: Settings,
+    exporter: VmssMetricsExporter,
+) -> LeaderElectionRunner | None:
+    """Start the leader-election supervisor in a daemon thread when enabled."""
+
+    if not settings.leader_election_enabled:
+        return None
+    load_incluster_kube_config()
+    config = LeaderElectionConfig(
+        lock_name=settings.leader_election_lock_name,
+        lock_namespace=settings.leader_election_namespace,
+        identity=settings.leader_election_identity,
+        lease_duration_seconds=settings.leader_election_lease_duration_seconds,
+        renew_deadline_seconds=settings.leader_election_renew_deadline_seconds,
+        retry_period_seconds=settings.leader_election_retry_period_seconds,
+    )
+    runner = LeaderElectionRunner(
+        config,
+        on_started_leading=lambda: exporter.set_leader(True),
+        on_stopped_leading=lambda: exporter.set_leader(False),
+    )
+    thread = threading.Thread(
+        target=runner.run_forever,
+        name="leader-election",
+        daemon=True,
+    )
+    thread.start()
+    LOGGER.info(
+        "Leader-election supervisor started for lock %s/%s as %s (lease=%ss, renew=%ss, retry=%ss)",
+        config.lock_namespace,
+        config.lock_name,
+        config.identity,
+        config.lease_duration_seconds,
+        config.renew_deadline_seconds,
+        config.retry_period_seconds,
+    )
+    return runner
 
 
 def _configure_logging(level_name: str) -> None:

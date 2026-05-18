@@ -15,10 +15,15 @@ from .azure_resource_graph import build_query_request
 from .models import (
     ManagedLustreCollectionResult,
     ManagedLustreFilesystem,
+    ManagedLustreMdtMetric,
+    ManagedLustreMdtOperationMetric,
     ManagedLustreOstMetric,
+    ManagedLustreOstOperationMetric,
 )
 
 LOGGER = logging.getLogger(__name__)
+
+AGGREGATE_DIMENSION_VALUE = "all"
 
 AMLFS_FILESYSTEMS_QUERY = """
 Resources
@@ -38,11 +43,53 @@ LUSTRE_METRIC_NAMESPACE = "Microsoft.StorageCache/amlFilesystems"
 OST_BYTES_AVAILABLE_METRIC = "OSTBytesAvailable"
 OST_BYTES_USED_METRIC = "OSTBytesUsed"
 OST_BYTES_TOTAL_METRIC = "OSTBytesTotal"
+OST_CLIENT_LATENCY_METRIC = "OSTClientLatency"
+OST_CLIENT_OPS_METRIC = "OSTClientOps"
+CLIENT_READ_OPS_METRIC = "ClientReadOps"
+CLIENT_READ_THROUGHPUT_METRIC = "ClientReadThroughput"
+CLIENT_WRITE_OPS_METRIC = "ClientWriteOps"
+CLIENT_WRITE_THROUGHPUT_METRIC = "ClientWriteThroughput"
+MDT_BYTES_AVAILABLE_METRIC = "MDTBytesAvailable"
+MDT_BYTES_USED_METRIC = "MDTBytesUsed"
+MDT_BYTES_TOTAL_METRIC = "MDTBytesTotal"
+MDT_FILES_FREE_METRIC = "MDTFilesFree"
+MDT_FILES_USED_METRIC = "MDTFilesUsed"
+MDT_FILES_TOTAL_METRIC = "MDTFilesTotal"
+MDT_CLIENT_LATENCY_METRIC = "MDTClientLatency"
+MDT_CLIENT_OPS_METRIC = "MDTClientOps"
 OST_CAPACITY_METRICS = (
     OST_BYTES_AVAILABLE_METRIC,
     OST_BYTES_USED_METRIC,
     OST_BYTES_TOTAL_METRIC,
 )
+OST_SIMPLE_METRICS = (
+    OST_BYTES_AVAILABLE_METRIC,
+    OST_BYTES_USED_METRIC,
+    OST_BYTES_TOTAL_METRIC,
+    CLIENT_READ_OPS_METRIC,
+    CLIENT_READ_THROUGHPUT_METRIC,
+    CLIENT_WRITE_OPS_METRIC,
+    CLIENT_WRITE_THROUGHPUT_METRIC,
+)
+OST_OPERATION_METRICS = (
+    OST_CLIENT_LATENCY_METRIC,
+    OST_CLIENT_OPS_METRIC,
+)
+OST_METRICS = OST_SIMPLE_METRICS + OST_OPERATION_METRICS
+MDT_SIMPLE_METRICS = (
+    MDT_BYTES_AVAILABLE_METRIC,
+    MDT_BYTES_USED_METRIC,
+    MDT_BYTES_TOTAL_METRIC,
+    MDT_FILES_FREE_METRIC,
+    MDT_FILES_USED_METRIC,
+    MDT_FILES_TOTAL_METRIC,
+)
+MDT_OPERATION_METRICS = (
+    MDT_CLIENT_LATENCY_METRIC,
+    MDT_CLIENT_OPS_METRIC,
+)
+MDT_METRICS = MDT_SIMPLE_METRICS + MDT_OPERATION_METRICS
+LUSTRE_METRICS = OST_METRICS + MDT_METRICS
 
 _ISO_DURATION_PATTERN = re.compile(r"^PT(?:(?P<hours>\d+)H)?(?:(?P<minutes>\d+)M)?$", re.IGNORECASE)
 
@@ -95,13 +142,16 @@ class AzureManagedLustreCollector:
         self._retry_base_delay_seconds = retry_base_delay_seconds
 
     def collect(self) -> ManagedLustreCollectionResult:
-        """Return OST bytes-available samples for all discovered AMLFS resources."""
+        """Return OST metric samples for all discovered AMLFS resources."""
 
         filesystems = tuple(self.discover_filesystems())
         if not filesystems:
             return ManagedLustreCollectionResult(metrics=(), filesystem_count=0)
 
         metrics: list[ManagedLustreOstMetric] = []
+        operation_metrics: list[ManagedLustreOstOperationMetric] = []
+        mdt_metrics: list[ManagedLustreMdtMetric] = []
+        mdt_operation_metrics: list[ManagedLustreMdtOperationMetric] = []
         error_count = 0
         worker_count = min(self._max_workers, len(filesystems))
         with ThreadPoolExecutor(max_workers=worker_count) as executor:
@@ -112,7 +162,16 @@ class AzureManagedLustreCollector:
             for future in as_completed(futures):
                 filesystem = futures[future]
                 try:
-                    metrics.extend(future.result())
+                    (
+                        filesystem_metrics,
+                        filesystem_operation_metrics,
+                        filesystem_mdt_metrics,
+                        filesystem_mdt_operation_metrics,
+                    ) = future.result()
+                    metrics.extend(filesystem_metrics)
+                    operation_metrics.extend(filesystem_operation_metrics)
+                    mdt_metrics.extend(filesystem_mdt_metrics)
+                    mdt_operation_metrics.extend(filesystem_mdt_operation_metrics)
                 except Exception:  # noqa: BLE001 - isolate per-resource Azure Monitor failures.
                     error_count += 1
                     LOGGER.exception(
@@ -128,10 +187,39 @@ class AzureManagedLustreCollector:
                 item.ostnum,
             )
         )
+        operation_metrics.sort(
+            key=lambda item: (
+                item.subscription_id,
+                item.resource_group,
+                item.filesystem_name,
+                item.ostnum,
+                item.operation,
+            )
+        )
+        mdt_metrics.sort(
+            key=lambda item: (
+                item.subscription_id,
+                item.resource_group,
+                item.filesystem_name,
+                item.mdtnum,
+            )
+        )
+        mdt_operation_metrics.sort(
+            key=lambda item: (
+                item.subscription_id,
+                item.resource_group,
+                item.filesystem_name,
+                item.mdtnum,
+                item.operation,
+            )
+        )
         return ManagedLustreCollectionResult(
             metrics=tuple(metrics),
             filesystem_count=len(filesystems),
             error_count=error_count,
+            operation_metrics=tuple(operation_metrics),
+            mdt_metrics=tuple(mdt_metrics),
+            mdt_operation_metrics=tuple(mdt_operation_metrics),
         )
 
     def discover_filesystems(self) -> list[ManagedLustreFilesystem]:
@@ -165,18 +253,23 @@ class AzureManagedLustreCollector:
 
     def _collect_filesystem_metrics(
         self, filesystem: ManagedLustreFilesystem
-    ) -> list[ManagedLustreOstMetric]:
+    ) -> tuple[
+        list[ManagedLustreOstMetric],
+        list[ManagedLustreOstOperationMetric],
+        list[ManagedLustreMdtMetric],
+        list[ManagedLustreMdtOperationMetric],
+    ]:
         response = self._execute_with_retry(
             lambda: self._metrics_client.query_resource(
                 filesystem.resource_id,
-                OST_CAPACITY_METRICS,
+                list(LUSTRE_METRICS),
                 metric_namespace=LUSTRE_METRIC_NAMESPACE,
                 timespan=self._lookback,
                 granularity=self._granularity,
                 aggregations=["Average"],
             )
         )
-        return normalize_ost_capacity_response(filesystem, response)
+        return normalize_lustre_metrics_response(filesystem, response)
 
     def _execute_with_retry(self, operation: Any) -> object:
         attempt = 0
@@ -239,7 +332,7 @@ def normalize_ost_bytes_available_response(
     """Normalize an Azure Monitor response to latest non-null OST samples.
 
     Kept as a compatibility wrapper for older tests/callers. It now accepts
-    responses containing `OSTBytesAvailable`, `OSTBytesUsed`, and `OSTBytesTotal`.
+    responses containing any of the supported OST metrics.
     """
 
     return normalize_ost_capacity_response(filesystem, response)
@@ -249,35 +342,102 @@ def normalize_ost_capacity_response(
     filesystem: ManagedLustreFilesystem,
     response: object,
 ) -> list[ManagedLustreOstMetric]:
-    """Normalize Azure Monitor OST capacity metrics into one sample per OST."""
+    """Normalize Azure Monitor OST metrics into one sample per OST.
+
+    Kept as a compatibility wrapper for older callers. Operation-dimension
+    metrics such as `OSTClientLatency` are ignored by this wrapper; use
+    :func:`normalize_ost_metrics_response` for the complete result.
+    """
+
+    metrics, _operation_metrics = normalize_ost_metrics_response(filesystem, response)
+    return metrics
+
+
+def normalize_ost_metrics_response(
+    filesystem: ManagedLustreFilesystem,
+    response: object,
+) -> tuple[list[ManagedLustreOstMetric], list[ManagedLustreOstOperationMetric]]:
+    """Normalize Azure Monitor OST metrics into Prometheus-ready samples."""
+
+    ost_metrics, ost_operation_metrics, _mdt_metrics, _mdt_operation_metrics = (
+        normalize_lustre_metrics_response(filesystem, response)
+    )
+    return ost_metrics, ost_operation_metrics
+
+
+def normalize_lustre_metrics_response(
+    filesystem: ManagedLustreFilesystem,
+    response: object,
+) -> tuple[
+    list[ManagedLustreOstMetric],
+    list[ManagedLustreOstOperationMetric],
+    list[ManagedLustreMdtMetric],
+    list[ManagedLustreMdtOperationMetric],
+]:
+    """Normalize Azure Monitor Lustre metrics into Prometheus-ready samples."""
 
     ost_values: dict[str, dict[str, float | None]] = {}
     ost_timestamps: dict[str, float] = {}
+    operation_values: dict[tuple[str, str], dict[str, float | None]] = {}
+    operation_timestamps: dict[tuple[str, str], float] = {}
+    mdt_values: dict[str, dict[str, float | None]] = {}
+    mdt_timestamps: dict[str, float] = {}
+    mdt_operation_values: dict[tuple[str, str], dict[str, float | None]] = {}
+    mdt_operation_timestamps: dict[tuple[str, str], float] = {}
 
     for metric in _iter_sequence_attr(response, "metrics"):
         metric_name = _metric_name(metric)
-        if metric_name not in OST_CAPACITY_METRICS:
+        if metric_name not in LUSTRE_METRICS:
             continue
         for time_series in _iter_sequence_attr(metric, "timeseries", fallback="time_series"):
-            ostnum = _dimension_value(time_series, "ostnum")
-            if not ostnum:
-                continue
             latest = _latest_average(time_series)
             if latest is None:
                 continue
             value, sample_timestamp_seconds = latest
-            ost_values.setdefault(ostnum, {})[metric_name] = value
-            if sample_timestamp_seconds is not None:
-                ost_timestamps[ostnum] = max(
-                    sample_timestamp_seconds,
-                    ost_timestamps.get(ostnum, 0),
-                )
+            if metric_name in OST_METRICS:
+                ostnum = _dimension_value_or_aggregate(time_series, "ostnum")
+                if not ostnum:
+                    continue
+            if metric_name in MDT_METRICS:
+                mdtnum = _dimension_value_or_aggregate(time_series, "mdtnum")
+                if not mdtnum:
+                    continue
+
+            if metric_name in OST_OPERATION_METRICS:
+                operation = _dimension_value(time_series, "operation") or AGGREGATE_DIMENSION_VALUE
+                key = (ostnum, operation)
+                operation_values.setdefault(key, {})[metric_name] = value
+                if sample_timestamp_seconds is not None:
+                    operation_timestamps[key] = max(
+                        sample_timestamp_seconds,
+                        operation_timestamps.get(key, 0),
+                    )
+            elif metric_name in OST_SIMPLE_METRICS:
+                ost_values.setdefault(ostnum, {})[metric_name] = value
+                if sample_timestamp_seconds is not None:
+                    ost_timestamps[ostnum] = max(
+                        sample_timestamp_seconds,
+                        ost_timestamps.get(ostnum, 0),
+                    )
+            elif metric_name in MDT_OPERATION_METRICS:
+                operation = _dimension_value(time_series, "operation") or AGGREGATE_DIMENSION_VALUE
+                key = (mdtnum, operation)
+                mdt_operation_values.setdefault(key, {})[metric_name] = value
+                if sample_timestamp_seconds is not None:
+                    mdt_operation_timestamps[key] = max(
+                        sample_timestamp_seconds,
+                        mdt_operation_timestamps.get(key, 0),
+                    )
+            elif metric_name in MDT_SIMPLE_METRICS:
+                mdt_values.setdefault(mdtnum, {})[metric_name] = value
+                if sample_timestamp_seconds is not None:
+                    mdt_timestamps[mdtnum] = max(
+                        sample_timestamp_seconds,
+                        mdt_timestamps.get(mdtnum, 0),
+                    )
 
     results: list[ManagedLustreOstMetric] = []
     for ostnum, values in ost_values.items():
-        bytes_available = values.get(OST_BYTES_AVAILABLE_METRIC)
-        if bytes_available is None:
-            continue
         results.append(
             ManagedLustreOstMetric(
                 subscription_id=filesystem.subscription_id,
@@ -285,13 +445,72 @@ def normalize_ost_capacity_response(
                 filesystem_name=filesystem.filesystem_name,
                 location=filesystem.location,
                 ostnum=ostnum,
-                bytes_available=bytes_available,
+                bytes_available=values.get(OST_BYTES_AVAILABLE_METRIC),
                 bytes_used=values.get(OST_BYTES_USED_METRIC),
                 bytes_total=values.get(OST_BYTES_TOTAL_METRIC),
+                client_read_ops=values.get(CLIENT_READ_OPS_METRIC),
+                client_read_throughput_bytes_per_second=values.get(
+                    CLIENT_READ_THROUGHPUT_METRIC
+                ),
+                client_write_ops=values.get(CLIENT_WRITE_OPS_METRIC),
+                client_write_throughput_bytes_per_second=values.get(
+                    CLIENT_WRITE_THROUGHPUT_METRIC
+                ),
                 sample_timestamp_seconds=ost_timestamps.get(ostnum),
             )
         )
-    return results
+
+    operation_results: list[ManagedLustreOstOperationMetric] = []
+    for (ostnum, operation), values in operation_values.items():
+        operation_results.append(
+            ManagedLustreOstOperationMetric(
+                subscription_id=filesystem.subscription_id,
+                resource_group=filesystem.resource_group,
+                filesystem_name=filesystem.filesystem_name,
+                location=filesystem.location,
+                ostnum=ostnum,
+                operation=operation,
+                client_latency_milliseconds=values.get(OST_CLIENT_LATENCY_METRIC),
+                client_ops=values.get(OST_CLIENT_OPS_METRIC),
+                sample_timestamp_seconds=operation_timestamps.get((ostnum, operation)),
+            )
+        )
+
+    mdt_results: list[ManagedLustreMdtMetric] = []
+    for mdtnum, values in mdt_values.items():
+        mdt_results.append(
+            ManagedLustreMdtMetric(
+                subscription_id=filesystem.subscription_id,
+                resource_group=filesystem.resource_group,
+                filesystem_name=filesystem.filesystem_name,
+                location=filesystem.location,
+                mdtnum=mdtnum,
+                bytes_available=values.get(MDT_BYTES_AVAILABLE_METRIC),
+                bytes_used=values.get(MDT_BYTES_USED_METRIC),
+                bytes_total=values.get(MDT_BYTES_TOTAL_METRIC),
+                files_free=values.get(MDT_FILES_FREE_METRIC),
+                files_used=values.get(MDT_FILES_USED_METRIC),
+                files_total=values.get(MDT_FILES_TOTAL_METRIC),
+                sample_timestamp_seconds=mdt_timestamps.get(mdtnum),
+            )
+        )
+
+    mdt_operation_results: list[ManagedLustreMdtOperationMetric] = []
+    for (mdtnum, operation), values in mdt_operation_values.items():
+        mdt_operation_results.append(
+            ManagedLustreMdtOperationMetric(
+                subscription_id=filesystem.subscription_id,
+                resource_group=filesystem.resource_group,
+                filesystem_name=filesystem.filesystem_name,
+                location=filesystem.location,
+                mdtnum=mdtnum,
+                operation=operation,
+                client_latency_milliseconds=values.get(MDT_CLIENT_LATENCY_METRIC),
+                client_ops=values.get(MDT_CLIENT_OPS_METRIC),
+                sample_timestamp_seconds=mdt_operation_timestamps.get((mdtnum, operation)),
+            )
+        )
+    return results, operation_results, mdt_results, mdt_operation_results
 
 
 def parse_iso_duration(value: str) -> timedelta:
@@ -313,7 +532,9 @@ def summarize_lustre_metrics(result: ManagedLustreCollectionResult) -> str:
 
     lines = [
         "subscription_id\tresource_group\tfilesystem_name\tlocation\tostnum\t"
-        "bytes_available\tbytes_used\tbytes_total\tbytes_available_percent"
+        "bytes_available\tbytes_used\tbytes_total\tbytes_available_percent\t"
+        "client_read_ops\tclient_read_throughput_bytes_per_second\tclient_write_ops\t"
+        "client_write_throughput_bytes_per_second"
     ]
     for item in result.metrics:
         lines.append(
@@ -328,13 +549,94 @@ def summarize_lustre_metrics(result: ManagedLustreCollectionResult) -> str:
                     _optional_float_str(item.bytes_used),
                     _optional_float_str(item.bytes_total),
                     _optional_float_str(item.bytes_available_percent),
+                    _optional_float_str(item.client_read_ops),
+                    _optional_float_str(item.client_read_throughput_bytes_per_second),
+                    _optional_float_str(item.client_write_ops),
+                    _optional_float_str(item.client_write_throughput_bytes_per_second),
                 ]
             )
         )
-    if not result.metrics and result.filesystem_count == 0:
+    if result.operation_metrics:
+        lines.append("")
+        lines.append(
+            "subscription_id\tresource_group\tfilesystem_name\tlocation\tostnum\toperation\t"
+            "client_latency_milliseconds\tclient_ops"
+        )
+        for item in result.operation_metrics:
+            lines.append(
+                "\t".join(
+                    [
+                        item.subscription_id,
+                        item.resource_group,
+                        item.filesystem_name,
+                        item.location,
+                        item.ostnum,
+                        item.operation,
+                        _optional_float_str(item.client_latency_milliseconds),
+                        _optional_float_str(item.client_ops),
+                    ]
+                )
+            )
+    if result.mdt_metrics:
+        lines.append("")
+        lines.append(
+            "subscription_id\tresource_group\tfilesystem_name\tlocation\tmdtnum\t"
+            "bytes_available\tbytes_used\tbytes_total\tbytes_available_percent\t"
+            "files_free\tfiles_used\tfiles_total\tfiles_free_percent"
+        )
+        for item in result.mdt_metrics:
+            lines.append(
+                "\t".join(
+                    [
+                        item.subscription_id,
+                        item.resource_group,
+                        item.filesystem_name,
+                        item.location,
+                        item.mdtnum,
+                        _optional_float_str(item.bytes_available),
+                        _optional_float_str(item.bytes_used),
+                        _optional_float_str(item.bytes_total),
+                        _optional_float_str(item.bytes_available_percent),
+                        _optional_float_str(item.files_free),
+                        _optional_float_str(item.files_used),
+                        _optional_float_str(item.files_total),
+                        _optional_float_str(item.files_free_percent),
+                    ]
+                )
+            )
+    if result.mdt_operation_metrics:
+        lines.append("")
+        lines.append(
+            "subscription_id\tresource_group\tfilesystem_name\tlocation\tmdtnum\toperation\t"
+            "client_latency_milliseconds\tclient_ops"
+        )
+        for item in result.mdt_operation_metrics:
+            lines.append(
+                "\t".join(
+                    [
+                        item.subscription_id,
+                        item.resource_group,
+                        item.filesystem_name,
+                        item.location,
+                        item.mdtnum,
+                        item.operation,
+                        _optional_float_str(item.client_latency_milliseconds),
+                        _optional_float_str(item.client_ops),
+                    ]
+                )
+            )
+    has_samples = any(
+        (
+            result.metrics,
+            result.operation_metrics,
+            result.mdt_metrics,
+            result.mdt_operation_metrics,
+        )
+    )
+    if not has_samples and result.filesystem_count == 0:
         lines.append("# no Azure Managed Lustre filesystems discovered")
-    elif not result.metrics:
-        lines.append("# no OST capacity samples returned")
+    elif not has_samples:
+        lines.append("# no Lustre metric samples returned")
     return "\n".join(lines)
 
 
@@ -395,7 +697,10 @@ def _iter_sequence_attr(item: object, name: str, *, fallback: str | None = None)
         return value
     if isinstance(value, tuple):
         return list(value)
-    return list(value)
+    try:
+        return list(value)
+    except TypeError:
+        return []
 
 
 def _attr_or_mapping(item: object, name: str) -> Any:
@@ -420,6 +725,13 @@ def _dimension_value(time_series: object, dimension_name: str) -> str | None:
             if value is not None and str(value).strip():
                 return str(value)
     return None
+
+
+def _dimension_value_or_aggregate(time_series: object, dimension_name: str) -> str | None:
+    metadata_values = _iter_sequence_attr(time_series, "metadata_values")
+    if not metadata_values:
+        return AGGREGATE_DIMENSION_VALUE
+    return _dimension_value(time_series, dimension_name)
 
 
 def _latest_average(time_series: object) -> tuple[float, float | None] | None:

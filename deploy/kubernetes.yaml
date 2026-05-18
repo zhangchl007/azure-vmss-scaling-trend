@@ -1,3 +1,14 @@
+# ------------------------------------------------------------------
+# Workload-Identity ServiceAccount (kept for reference). Currently
+# unused — the Deployment below runs as the dedicated
+# `vmss-metrics-exporter` ServiceAccount and authenticates to Azure
+# via the `vmss-metrics-exporter-sp` Secret. To switch back to WI:
+#   1. Set `serviceAccountName: workidentity-sa` in the Deployment.
+#   2. Re-add `azure.workload.identity/use: "true"` label on both
+#      Deployment.metadata.labels and template.metadata.labels.
+#   3. Set VMSS_METRICS_AUTH_MODE=workload_identity and remove the
+#      three AZURE_* secretKeyRef env entries.
+# ------------------------------------------------------------------
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -5,6 +16,64 @@ metadata:
   namespace: default
   annotations:
     azure.workload.identity/client-id: bc4d548a-d6ed-46ab-88bb-24574de23c46
+---
+# Dedicated ServiceAccount used by the exporter pods. RBAC below
+# grants the access needed for the kubernetes.leaderelection
+# ConfigMapLock to read/update its lock annotation.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vmss-metrics-exporter
+  namespace: default
+  labels:
+    app.kubernetes.io/name: vmss-metrics-exporter
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: vmss-metrics-exporter-leader-election
+  namespace: default
+  labels:
+    app.kubernetes.io/name: vmss-metrics-exporter
+rules:
+  # ConfigMapLock from kubernetes.leaderelection stores the holder
+  # identity inside an annotation on a single ConfigMap whose name
+  # matches LEADER_ELECTION_LOCK_NAME below.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: vmss-metrics-exporter-leader-election
+  namespace: default
+  labels:
+    app.kubernetes.io/name: vmss-metrics-exporter
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: vmss-metrics-exporter-leader-election
+subjects:
+  - kind: ServiceAccount
+    name: vmss-metrics-exporter
+    namespace: default
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: vmss-metrics-exporter
+  namespace: default
+  labels:
+    app.kubernetes.io/name: vmss-metrics-exporter
+spec:
+  # Keep at least one collector replica scheduled during voluntary
+  # disruptions (node drains, cluster autoscaler) so the lock never
+  # transitions through an empty period longer than the lease.
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vmss-metrics-exporter
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -14,7 +83,15 @@ metadata:
   labels:
     app.kubernetes.io/name: vmss-metrics-exporter
 spec:
-  replicas: 1
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # Keep at least one active replica during rollout. The new pod
+      # waits as a follower until it acquires the lock from the
+      # outgoing leader.
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels:
       app.kubernetes.io/name: vmss-metrics-exporter
@@ -23,10 +100,22 @@ spec:
       labels:
         app.kubernetes.io/name: vmss-metrics-exporter
     spec:
-      serviceAccountName: default
+      serviceAccountName: vmss-metrics-exporter
+      terminationGracePeriodSeconds: 30
+      affinity:
+        # Prefer to spread replicas across nodes for HA; do not require
+        # it so the deployment still schedules on single-node clusters.
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: vmss-metrics-exporter
       containers:
         - name: exporter
-          image: zhangchl007/vmss-metrics-exporter:v9
+          image: zhangchl007/vmss-metrics-exporter:v11
           imagePullPolicy: IfNotPresent
           ports:
             - name: metrics
@@ -64,16 +153,6 @@ spec:
                 secretKeyRef:
                   name: vmss-metrics-exporter-sp
                   key: AZURE_CLIENT_SECRET
-            # ------------------------------------------------------------------
-            # To switch back to Workload Identity:
-            #   1. Restore ServiceAccount `workidentity-sa` (annotated with the WI
-            #      federated client-id) at the top of this manifest.
-            #   2. Set `serviceAccountName: workidentity-sa` above.
-            #   3. Add label `azure.workload.identity/use: "true"` to both the
-            #      Deployment metadata.labels and spec.template.metadata.labels.
-            #   4. Set VMSS_METRICS_AUTH_MODE above to "workload_identity".
-            #   5. Remove the three AZURE_* secretKeyRef env entries above.
-            # ------------------------------------------------------------------
             - name: POLL_INTERVAL_SECONDS
               value: "300"
             - name: PORT
@@ -90,6 +169,26 @@ spec:
               value: "PT1M"
             - name: LUSTRE_METRICS_MAX_WORKERS
               value: "4"
+            # ----- Leader election (active/standby HA) --------------------
+            - name: LEADER_ELECTION_ENABLED
+              value: "true"
+            - name: LEADER_ELECTION_LOCK_NAME
+              value: "vmss-metrics-exporter"
+            - name: LEADER_ELECTION_LEASE_DURATION_SECONDS
+              value: "15"
+            - name: LEADER_ELECTION_RENEW_DEADLINE_SECONDS
+              value: "10"
+            - name: LEADER_ELECTION_RETRY_PERIOD_SECONDS
+              value: "2"
+            # Downward API: candidate identity = pod name, lock namespace = pod namespace.
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
           readinessProbe:
             httpGet:
               path: /metrics
