@@ -1,209 +1,128 @@
 # Azure VMSS and Managed Lustre Metrics Exporter
 
-Python Prometheus exporter that periodically inventories every Azure VM Scale Set (VMSS) and Azure Managed Lustre filesystem in one or more subscriptions. It exposes VMSS names, desired capacity, actual child-VM counts, and a focused key set of Managed Lustre OST/MDT capacity, metadata file capacity, latency, operations, and throughput samples as Prometheus gauges.
+Prometheus exporter for Azure VM Scale Sets and Azure Managed Lustre filesystems.
 
-Azure Monitor does not provide a simple native subscription-wide metric for "VMSS name and current instance count". This exporter treats the problem as Azure inventory/state sampling: it uses **Azure Resource Graph** to query all configured subscriptions in one request pattern and exposes the result as cached gauges on `/metrics`. For Azure Managed Lustre, Resource Graph discovers all `Microsoft.StorageCache/amlFilesystems` resources and Azure Monitor provides per-filesystem OST, MDT, and client read/write samples.
+The exporter discovers resources with Azure Resource Graph, reads Managed Lustre metrics from Azure Monitor, and exposes cached Prometheus metrics on `/metrics`.
 
-## Repo layout
+## Features
 
-```
+- Discover VM Scale Sets across one or more Azure subscriptions.
+- Export actual VMSS instance count and desired VMSS capacity.
+- Discover Azure Managed Lustre filesystems.
+- Export key Managed Lustre OST and MDT metrics.
+- Export filesystem inventory metrics so every discovered Lustre filesystem is visible in Grafana.
+- Support local Azure CLI auth, Service Principal auth, Managed Identity, and AKS Workload Identity.
+- Optional Kubernetes leader election for HA deployments.
+
+## Project layout
+
+```text
 .
 ├── Dockerfile
-├── Makefile                              # local + container + Kubernetes workflows
+├── Makefile
 ├── pyproject.toml
-├── README.md
 ├── deploy/
-│   ├── kubernetes.yaml                   # ServiceAccount + Deployment + Service (Workload Identity)
-│   ├── ama-metrics-settings-configmap-v1.yaml  # Azure Managed Prometheus scrape config
-│   ├── grafana-dashboard-vmss.json       # importable VMSS Grafana dashboard
-│   ├── grafana-dashboard-lustre.json     # importable Managed Lustre Grafana dashboard
-│   └── lustre-alert-rules.yaml           # Prometheus alert rules for low/stale Lustre capacity
+│   ├── ama-metrics-settings-configmap-v1.yaml
+│   ├── grafana-dashboard-lustre.json
+│   ├── grafana-dashboard-vmss.json
+│   ├── kubernetes.yaml
+│   └── lustre-alert-rules.yaml
 ├── src/vmss_metrics_exporter/
+│   ├── azure_managed_lustre.py
 │   ├── azure_resource_graph.py
 │   ├── collector.py
 │   ├── config.py
+│   ├── credentials.py
 │   ├── main.py
 │   └── models.py
 └── tests/
 ```
 
-## What it exports
+## Metrics
 
-| Metric | Type | Meaning |
-| --- | --- | --- |
-| `azure_vmss_instance_count` | Gauge | Actual VMSS child virtual-machine count observed in Resource Graph. |
-| `azure_vmss_capacity` | Gauge | Desired VMSS capacity from the parent VMSS `sku.capacity`. |
-| `azure_vmss_info` | Gauge (info) | Static VMSS metadata. Value is always `1`. Labels include `vm_size` (`sku.name`) and `sku_tier` (`sku.tier`). Join with `* on (subscription_id, resource_group, vmss_name) group_left(vm_size, sku_tier)` to enrich the count metrics. |
-| `azure_vmss_exporter_last_success_timestamp_seconds` | Gauge | Unix timestamp of the last successful collection. |
-| `azure_vmss_exporter_collection_duration_seconds` | Gauge | Duration of the most recent collection attempt. |
-| `azure_vmss_exporter_collection_errors_total` | Counter | Total collection errors observed by this process. |
-| `azure_vmss_exporter_vmss_total` | Gauge | Number of VMSS observed in the most recent successful collection. |
-| `azure_managed_lustre_ost_bytes_available` | Gauge | Azure Managed Lustre `OSTBytesAvailable` metric in bytes, one series per filesystem OST. |
-| `azure_managed_lustre_ost_bytes_used` | Gauge | Azure Managed Lustre `OSTBytesUsed` metric in bytes, one series per filesystem OST when Azure Monitor returns it. |
-| `azure_managed_lustre_ost_bytes_total` | Gauge | Azure Managed Lustre `OSTBytesTotal` metric in bytes, one series per filesystem OST when Azure Monitor returns it. |
-| `azure_managed_lustre_ost_bytes_available_percent` | Gauge | Derived available percentage: `OSTBytesAvailable / OSTBytesTotal * 100`. Use this for normalized capacity alerts. |
-| `azure_managed_lustre_ost_bytes_used_percent` | Gauge | Derived used percentage: `OSTBytesUsed / OSTBytesTotal * 100`. |
-| `azure_managed_lustre_ost_client_latency_milliseconds` | Gauge | Azure Managed Lustre `OSTClientLatency`, labelled by OST and operation. |
-| `azure_managed_lustre_ost_client_ops` | Gauge | Azure Managed Lustre `OSTClientOps`, labelled by OST and operation. |
-| `azure_managed_lustre_client_read_ops` | Gauge | Azure Managed Lustre `ClientReadOps`, labelled by OST. |
-| `azure_managed_lustre_client_read_throughput_bytes_per_second` | Gauge | Azure Managed Lustre `ClientReadThroughput`, labelled by OST. |
-| `azure_managed_lustre_client_write_ops` | Gauge | Azure Managed Lustre `ClientWriteOps`, labelled by OST. |
-| `azure_managed_lustre_client_write_throughput_bytes_per_second` | Gauge | Azure Managed Lustre `ClientWriteThroughput`, labelled by OST. |
-| `azure_managed_lustre_ost_sample_timestamp_seconds` | Gauge | Unix timestamp of the Azure Monitor sample backing each OST bytes-available series. Use this for stale-sample alerts. |
-| `azure_managed_lustre_mdt_bytes_available` | Gauge | Azure Managed Lustre `MDTBytesAvailable` metric in bytes, one series per filesystem MDT. |
-| `azure_managed_lustre_mdt_bytes_used` | Gauge | Azure Managed Lustre `MDTBytesUsed` metric in bytes, one series per filesystem MDT. |
-| `azure_managed_lustre_mdt_bytes_total` | Gauge | Azure Managed Lustre `MDTBytesTotal` metric in bytes, one series per filesystem MDT. |
-| `azure_managed_lustre_mdt_bytes_available_percent` | Gauge | Derived available percentage: `MDTBytesAvailable / MDTBytesTotal * 100`. |
-| `azure_managed_lustre_mdt_bytes_used_percent` | Gauge | Derived used percentage: `MDTBytesUsed / MDTBytesTotal * 100`. |
-| `azure_managed_lustre_mdt_files_free` | Gauge | Azure Managed Lustre `MDTFilesFree` metric, one series per filesystem MDT. |
-| `azure_managed_lustre_mdt_files_used` | Gauge | Azure Managed Lustre `MDTFilesUsed` metric, one series per filesystem MDT when Azure Monitor returns it. |
-| `azure_managed_lustre_mdt_files_total` | Gauge | Azure Managed Lustre `MDTFilesTotal` metric, one series per filesystem MDT. |
-| `azure_managed_lustre_mdt_files_free_percent` | Gauge | Derived free percentage: `MDTFilesFree / MDTFilesTotal * 100`. |
-| `azure_managed_lustre_mdt_files_used_percent` | Gauge | Derived used percentage: `MDTFilesUsed / MDTFilesTotal * 100`. |
-| `azure_managed_lustre_mdt_sample_timestamp_seconds` | Gauge | Unix timestamp of the Azure Monitor sample backing each MDT metric series. |
-| `azure_managed_lustre_mdt_client_latency_milliseconds` | Gauge | Azure Managed Lustre `MDTClientLatency`, labelled by MDT and operation. |
-| `azure_managed_lustre_mdt_client_ops` | Gauge | Azure Managed Lustre `MDTClientOps`, labelled by MDT and operation. |
-| `azure_managed_lustre_mdt_operation_sample_timestamp_seconds` | Gauge | Unix timestamp of the Azure Monitor sample backing each MDT operation metric series. |
-| `azure_managed_lustre_filesystem_total` | Gauge | Number of Azure Managed Lustre filesystems discovered in the latest collection. |
-| `azure_managed_lustre_ost_total` | Gauge | Number of Azure Managed Lustre OST series observed in the latest collection. |
-| `azure_managed_lustre_last_success_timestamp_seconds` | Gauge | Unix timestamp of the last successful Managed Lustre collection. |
-| `azure_managed_lustre_collection_duration_seconds` | Gauge | Duration of the latest Managed Lustre collection attempt. |
-| `azure_managed_lustre_collection_errors_total` | Counter | Total Managed Lustre collection errors observed by this process. |
+### VMSS metrics
 
-Labels on `azure_vmss_instance_count` and `azure_vmss_capacity`:
+| Metric | Description |
+| --- | --- |
+| `azure_vmss_instance_count` | Actual VM count for each VMSS. |
+| `azure_vmss_capacity` | Desired VMSS capacity from Azure. |
+| `azure_vmss_info` | VMSS metadata. Value is always `1`. |
+| `azure_vmss_exporter_vmss_total` | Number of VMSS discovered in the latest successful collection. |
+| `azure_vmss_exporter_last_success_timestamp_seconds` | Last successful VMSS collection timestamp. |
+| `azure_vmss_exporter_collection_duration_seconds` | Latest VMSS collection duration. |
+| `azure_vmss_exporter_collection_errors_total` | VMSS collection error counter. |
 
-- `subscription_id`
-- `resource_group`
-- `vmss_name`
-- `location`
-- `orchestration_mode` (`Uniform` / `Flexible`)
+### Managed Lustre inventory metrics
 
-Labels on `azure_vmss_info` (all five above, **plus**):
+| Metric | Description |
+| --- | --- |
+| `azure_managed_lustre_filesystem_info` | Metadata for each discovered Managed Lustre filesystem. Value is always `1`. |
+| `azure_managed_lustre_filesystem_storage_capacity_tib` | Configured filesystem capacity in TiB. |
+| `azure_managed_lustre_filesystem_total` | Number of Managed Lustre filesystems discovered. |
 
-- `vm_size` — the VMSS SKU name (e.g. `Standard_D4s_v3`, `Standard_D96s_v6`). For Flexible scale sets that mix sizes, this reflects the VMSS-level `sku.name` (often `Mix` or empty → reported as `unknown`).
-- `sku_tier` — the VMSS SKU tier (typically `Standard`).
+### Managed Lustre key metrics
 
-The info-metric pattern keeps `vm_size` *out of the count gauge labelsets*, so resizing a VMSS does not break the historical time series of `azure_vmss_instance_count` / `azure_vmss_capacity`. Example PromQL to show instance counts with VM size:
+| Metric | Description |
+| --- | --- |
+| `azure_managed_lustre_ost_bytes_available` | OST bytes available. |
+| `azure_managed_lustre_ost_bytes_used` | OST bytes used. |
+| `azure_managed_lustre_ost_bytes_total` | OST bytes total. |
+| `azure_managed_lustre_ost_bytes_available_percent` | Derived OST available percentage. |
+| `azure_managed_lustre_ost_bytes_used_percent` | Derived OST used percentage. |
+| `azure_managed_lustre_client_read_ops` | Client read operations. |
+| `azure_managed_lustre_client_read_throughput_bytes_per_second` | Client read throughput. |
+| `azure_managed_lustre_client_write_ops` | Client write operations. |
+| `azure_managed_lustre_client_write_throughput_bytes_per_second` | Client write throughput. |
+| `azure_managed_lustre_ost_client_latency_milliseconds` | OST client latency. |
+| `azure_managed_lustre_ost_client_ops` | OST client operations. |
+| `azure_managed_lustre_mdt_bytes_available` | MDT bytes available. |
+| `azure_managed_lustre_mdt_bytes_used` | MDT bytes used. |
+| `azure_managed_lustre_mdt_bytes_total` | MDT bytes total. |
+| `azure_managed_lustre_mdt_bytes_available_percent` | Derived MDT available percentage. |
+| `azure_managed_lustre_mdt_bytes_used_percent` | Derived MDT used percentage. |
+| `azure_managed_lustre_mdt_files_free` | MDT free file/inode count. |
+| `azure_managed_lustre_mdt_files_used` | MDT used file/inode count. |
+| `azure_managed_lustre_mdt_files_total` | MDT total file/inode count. |
+| `azure_managed_lustre_mdt_files_free_percent` | Derived MDT file/inode free percentage. |
+| `azure_managed_lustre_mdt_files_used_percent` | Derived MDT file/inode used percentage. |
+| `azure_managed_lustre_mdt_client_latency_milliseconds` | MDT client latency. |
+| `azure_managed_lustre_mdt_client_ops` | MDT client operations. |
+| `azure_managed_lustre_last_success_timestamp_seconds` | Last successful Managed Lustre collection timestamp. |
+| `azure_managed_lustre_collection_duration_seconds` | Latest Managed Lustre collection duration. |
+| `azure_managed_lustre_collection_errors_total` | Managed Lustre collection error counter. |
 
-Labels on Managed Lustre per-OST metrics:
-
-- `subscription_id`
-- `resource_group`
-- `filesystem_name`
-- `location`
-- `ostnum` — Azure Monitor `ostnum` dimension from key OST metrics such as bytes, client throughput, and client operations.
-  When Azure Monitor returns an aggregate series without this dimension, the exporter uses `ostnum="all"`.
-
-Additional labels on operation-dimension Managed Lustre metrics such as `azure_managed_lustre_ost_client_latency_milliseconds` and `azure_managed_lustre_ost_client_ops`:
-
-- `operation` — Azure Monitor operation dimension (for example, `read` / `write` when emitted by Azure Monitor).
-
-Labels on Managed Lustre per-MDT metrics:
-
-- `subscription_id`
-- `resource_group`
-- `filesystem_name`
-- `location`
-- `mdtnum` — Azure Monitor `mdtnum` dimension from key MDT metrics such as bytes and file counts.
-  When Azure Monitor returns an aggregate series without this dimension, the exporter uses `mdtnum="all"`.
-
-Additional labels on operation-dimension MDT metrics such as `azure_managed_lustre_mdt_client_latency_milliseconds` and `azure_managed_lustre_mdt_client_ops`:
-
-- `operation` — Azure Monitor operation dimension for MDT operations.
-  When Azure Monitor returns an aggregate operation series without this dimension, the exporter uses `operation="all"`.
-
-```promql
-azure_vmss_instance_count
-  * on (subscription_id, resource_group, vmss_name) group_left(vm_size, sku_tier)
-    azure_vmss_info
-```
-
-## Why Azure Resource Graph
-
-The exporter answers a periodic inventory question:
-
-> For every VMSS in these subscriptions, what is its name and how many instances does it have right now?
-
-Resource Graph fits because it:
-
-- Queries every VMSS subscription-wide in one paged request, instead of fanning out ARM calls per scale set.
-- Can be polled on its own cadence (default 5 min) decoupled from the Prometheus scrape interval.
-- Returns both the parent VMSS (`sku.capacity`) and the child VM resources, so `azure_vmss_capacity` and `azure_vmss_instance_count` can be compared to detect scale transitions, failed allocations, or deletions.
+Managed Lustre labels include `subscription_id`, `resource_group`, `filesystem_name`, and `location`. OST metrics also include `ostnum`; MDT metrics also include `mdtnum`. If Azure Monitor returns an aggregate series without OST or MDT dimensions, the exporter uses `ostnum="all"` or `mdtnum="all"`.
 
 ## Configuration
 
-The exporter reads configuration from environment variables (and optionally a local `.env` file when running outside a container).
+Set configuration with environment variables. A local `.env` file is also supported.
 
-| Variable | Default | Meaning |
+| Variable | Default | Description |
 | --- | --- | --- |
-| `AZURE_SUBSCRIPTION_IDS` | _(required)_ | Comma-separated subscription IDs to query. |
-| `POLL_INTERVAL_SECONDS` | `300` | How often to call Azure Resource Graph. |
-| `HOST` | `0.0.0.0` | Bind host for the HTTP server. |
-| `PORT` | `8000` | Bind port for `/metrics`. |
-| `LOG_LEVEL` | `INFO` | Python logging level. |
-| `VMSS_METRICS_AUTH_MODE` | `auto` | Auth selection: `auto`, `workload_identity`, or `service_principal`. In Kubernetes, set this in the Deployment manifest. |
-| `ARG_PAGE_SIZE` | _(library default)_ | Optional Resource Graph page size. |
-| `ARG_MAX_RETRIES` | _(library default)_ | Optional retry count for transient errors. |
-| `ARG_RETRY_BASE_DELAY_SECONDS` | _(library default)_ | Optional retry backoff base. |
-| `ENABLE_MANAGED_LUSTRE_METRICS` | `true` | Discover all Azure Managed Lustre filesystems and query Azure Monitor for supported OST, client read/write, and MDT metrics. |
-| `LUSTRE_POLL_INTERVAL_SECONDS` | `60` | How often to query Azure Monitor for Managed Lustre metrics. This is intentionally independent from VMSS inventory polling for faster capacity alerting. |
-| `LUSTRE_METRICS_LOOKBACK_MINUTES` | `15` | Azure Monitor lookback window used to find the latest non-null OST sample. |
-| `LUSTRE_METRICS_INTERVAL` | `PT1M` | Azure Monitor metric granularity for Managed Lustre queries. |
-| `LUSTRE_METRICS_MAX_WORKERS` | `4` | Maximum concurrent per-filesystem Azure Monitor metric queries. |
+| `AZURE_SUBSCRIPTION_IDS` | required | Comma-separated subscription IDs to query. |
+| `POLL_INTERVAL_SECONDS` | `300` | VMSS collection interval. |
+| `HOST` | `0.0.0.0` | HTTP bind host. |
+| `PORT` | `8000` | HTTP bind port. |
+| `LOG_LEVEL` | `INFO` | Log level. |
+| `VMSS_METRICS_AUTH_MODE` | `auto` | `auto`, `service_principal`, or `workload_identity`. |
+| `ENABLE_MANAGED_LUSTRE_METRICS` | `true` | Enable Managed Lustre discovery and metrics. |
+| `LUSTRE_POLL_INTERVAL_SECONDS` | `60` | Managed Lustre collection interval. |
+| `LUSTRE_METRICS_LOOKBACK_MINUTES` | `15` | Azure Monitor lookback window. |
+| `LUSTRE_METRICS_INTERVAL` | `PT1M` | Azure Monitor metric granularity. |
+| `LUSTRE_METRICS_MAX_WORKERS` | `4` | Concurrent Managed Lustre metric queries. |
+| `LEADER_ELECTION_ENABLED` | `false` | Enable active/standby Kubernetes leader election. |
+| `LEADER_ELECTION_LOCK_NAME` | `vmss-metrics-exporter` | Leader-election lock name. |
+| `LEADER_ELECTION_NAMESPACE` | `default` | Leader-election namespace. |
 
-Authentication uses a resilient credential chain implemented in
-[`src/vmss_metrics_exporter/credentials.py`](src/vmss_metrics_exporter/credentials.py):
+For Service Principal auth, set:
 
-1. **Service Principal** — used when `VMSS_METRICS_AUTH_MODE=service_principal`, or
-  in `auto` mode when `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, and
-  `AZURE_CLIENT_SECRET` are all set. This is deterministic for Kubernetes
-  deployments that intentionally mount an SP secret, even if the AKS Workload
-  Identity webhook also injects WI environment variables.
-2. **Workload Identity** — used when `VMSS_METRICS_AUTH_MODE=workload_identity`, or
-  in `auto` mode when SP is not fully configured and the AKS webhook has injected the
-   `AZURE_CLIENT_ID` / `AZURE_TENANT_ID` / `AZURE_FEDERATED_TOKEN_FILE` env vars.
-   This step is constructed explicitly (not via `DefaultAzureCredential`) so the
-   resilient wrapper can catch its hard auth errors and continue.
-3. **`DefaultAzureCredential`** with workload-identity excluded — covers everything
-   else in the normal azure-identity order: Managed Identity via IMDS (using
-   `AZURE_CLIENT_ID` if set), Azure CLI, PowerShell, VS Code, etc. During
-   construction the `AZURE_FEDERATED_TOKEN_FILE` env var is temporarily cleared so
-   its internal `ManagedIdentityCredential` uses IMDS instead of silently reusing the
-   broken WI token-exchange shortcut.
+- `AZURE_CLIENT_ID`
+- `AZURE_TENANT_ID`
+- `AZURE_CLIENT_SECRET`
 
-Supported authentication modes:
+The identity needs Reader access to the target subscription(s).
 
-| Scenario | Required environment/configuration | Notes |
-| --- | --- | --- |
-| Service Principal | `VMSS_METRICS_AUTH_MODE=service_principal` plus `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_CLIENT_SECRET` | Uses `DefaultAzureCredential` with only `EnvironmentCredential` enabled. Good for local dev, CI, non-AKS deployments, or Kubernetes deployments that mount an SP Secret. |
-| AKS Workload Identity | `VMSS_METRICS_AUTH_MODE=workload_identity` plus `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_FEDERATED_TOKEN_FILE` injected by the webhook | Preferred for AKS. Tried first so the exporter can log and cache WI success. |
-| Auto | `VMSS_METRICS_AUTH_MODE=auto` or unset | SP wins when complete SP env vars exist; otherwise WI is used when webhook env vars exist; otherwise DAC fallback is used. |
-| Managed Identity | IMDS available; optionally `AZURE_CLIENT_ID` for user-assigned MI | In AKS fallback scenarios, the identity must be attached to the node VMSS for IMDS to issue tokens. |
-| Developer credentials | Azure CLI, Azure PowerShell, VS Code, etc. | Useful for local interactive runs when SP env vars are not set. |
-
-> In AKS, prefer setting `VMSS_METRICS_AUTH_MODE` in `deploy/kubernetes.yaml`. If you
-> choose `service_principal`, provide `AZURE_CLIENT_SECRET` through a Kubernetes Secret
-> or external secret provider — do not hardcode it in a manifest.
-
-Unlike a plain `DefaultAzureCredential` / `ChainedTokenCredential`, this chain
-**continues on hard authentication failures** (for example AADSTS700211 federated-
-credential mismatch, AADSTS53003 conditional-access block, or a missing token file)
-rather than aborting after the first credential errors. The first credential that
-returns a token is cached for subsequent calls. If it later starts failing, the chain
-is automatically re-walked.
-
-> **Note for the MI fallback to actually succeed**: the user-assigned managed identity
-> referenced by `AZURE_CLIENT_ID` must also be assigned to the **AKS node VMSS** so
-> IMDS can vend a token for it (`az vmss identity assign --identities <MI_ID> …`).
-> Workload Identity alone — without the identity attached to the VMSS — only works
-> through the federated-token flow.
-
-## Local quick start
-
-Prerequisites:
-
-- Python 3.10+
-- Azure CLI signed in with Reader access (or equivalent) to the target subscription(s)
+## Local run
 
 ```bash
 python -m venv .venv
@@ -211,353 +130,102 @@ source .venv/bin/activate
 pip install -e '.[dev]'
 
 az login
-az account set --subscription <subscription-id>
+export AZURE_SUBSCRIPTION_IDS=<subscription-id>
 
-export AZURE_SUBSCRIPTION_IDS=<subscription-id-1>,<subscription-id-2>
-
-# Optional non-interactive Service Principal auth instead of Azure CLI.
-# If all three are set, SP auth takes precedence over AKS Workload Identity.
-# export AZURE_CLIENT_ID=<app-or-managed-identity-client-id>
-# export AZURE_TENANT_ID=<tenant-id>
-# export AZURE_CLIENT_SECRET=<service-principal-secret>
-
-# One-shot inventory summary (no HTTP server):
 vmss-metrics-exporter --once
-
-# Long-running exporter:
 vmss-metrics-exporter
+```
+
+Open the metrics endpoint:
+
+```bash
 curl http://localhost:8000/metrics
 ```
 
-## Makefile targets
-
-All targets honor `IMAGE=<repo>` and `TAG=<tag>` overrides. See `make help` for the full list.
-
-| Target | Purpose |
-| --- | --- |
-| `make install` | `pip install -e '.[dev]'` into the active venv. |
-| `make test` | Run unit tests (`pytest -q`). |
-| `make lint` | Run `ruff check .`. |
-| `make validate` | `test` + `lint`. |
-| `make once` | Run one Resource Graph collection and print a summary. |
-| `make run` | Run the exporter locally from Python. |
-| `make image` / `make image-no-cache` | Build the container image. |
-| `make push` | Push the image. |
-| `make docker-run` | Run the container locally on `PORT=$PORT` with `SUBSCRIPTION_IDS=$SUBSCRIPTION_IDS`. |
-| `make deploy` | `kubectl apply -f deploy/kubernetes.yaml`. |
-| `make deploy-image` | Set the deployment container image to `$IMAGE:$TAG`. |
-| `make rollout` | Wait for the deployment rollout to complete. |
-| `make logs` | Tail exporter logs from Kubernetes. |
-| `make port-forward` | Port-forward the Service to `localhost:$PORT`. |
-
-Typical container release flow:
+## Docker
 
 ```bash
-make image push IMAGE=myrepo/vmss-metrics-exporter TAG=v1
-make deploy
-make deploy-image IMAGE=myrepo/vmss-metrics-exporter TAG=v1
-make rollout
+make image IMAGE=<repo>/vmss-metrics-exporter TAG=<tag>
+make push IMAGE=<repo>/vmss-metrics-exporter TAG=<tag>
 ```
 
-## Deploy on AKS with Microsoft Entra Workload Identity
-
-The sample [deploy/kubernetes.yaml](deploy/kubernetes.yaml) creates:
-
-- `ServiceAccount` `default/workidentity-sa` annotated with `azure.workload.identity/client-id`
-- `Deployment` `vmss-metrics-exporter` (labelled `azure.workload.identity/use: "true"`)
-- `Service` `vmss-metrics-exporter` exposing port `8000` (port name `metrics`)
-
-Pod environment is set to a default subscription ID; update it for your environment before applying.
-It also sets `VMSS_METRICS_AUTH_MODE=workload_identity` by default. To use Service
-Principal auth instead, create a Kubernetes Secret with `AZURE_CLIENT_ID`,
-`AZURE_TENANT_ID`, and `AZURE_CLIENT_SECRET`, change `VMSS_METRICS_AUTH_MODE` to
-`service_principal`, and uncomment the SP `secretKeyRef` env entries in the manifest.
-
-### 1. Enable Workload Identity on the AKS cluster
+Run locally with Docker:
 
 ```bash
-az aks update -g <aks-rg> -n <aks-name> \
-  --enable-oidc-issuer \
-  --enable-workload-identity
+make docker-run IMAGE=<repo>/vmss-metrics-exporter TAG=<tag> SUBSCRIPTION_IDS=<subscription-id>
 ```
 
-Capture the cluster's OIDC issuer URL — you will need it verbatim (trailing slash matters):
+## Kubernetes
 
-```bash
-AKS_ISSUER=$(az aks show -g <aks-rg> -n <aks-name> --query oidcIssuerProfile.issuerUrl -o tsv)
-echo "$AKS_ISSUER"
-```
+Update `deploy/kubernetes.yaml` for your environment:
 
-### 2. Create or pick a user-assigned managed identity
+- container image
+- `AZURE_SUBSCRIPTION_IDS`
+- authentication mode and identity settings
+- leader-election settings, if using multiple replicas
 
-```bash
-az identity create -g <identity-rg> -n <identity-name>
-CLIENT_ID=$(az identity show -g <identity-rg> -n <identity-name> --query clientId -o tsv)
-```
-
-### 3. Create the federated identity credential
-
-The federated credential's **issuer**, **subject**, and **audiences** must match exactly what the pod presents:
-
-```bash
-az identity federated-credential create \
-  --name sa-federation \
-  --identity-name <identity-name> \
-  --resource-group <identity-rg> \
-  --issuer "$AKS_ISSUER" \
-  --subject "system:serviceaccount:default:workidentity-sa" \
-  --audiences "api://AzureADTokenExchange"
-```
-
-> A mismatched issuer URL produces `AADSTS700211: No matching federated identity record found`. If you see that error, double-check the issuer URL is the AKS-managed OIDC issuer (not a previously-used self-hosted blob endpoint).
-
-### 4. Grant Azure RBAC
-
-The exporter calls Azure Resource Graph, which evaluates **Reader** at subscription scope. `Monitoring Reader` is **not** sufficient — it does not grant `Microsoft.Compute/virtualMachineScaleSets/*/read`.
-
-```bash
-for SUB in <subscription-id-1> <subscription-id-2>; do
-  az role assignment create \
-    --assignee "$CLIENT_ID" \
-    --role "Reader" \
-    --scope "/subscriptions/$SUB"
-done
-```
-
-  `Reader` at subscription scope is also the simplest supported role for Managed Lustre collection because the exporter must discover AMLFS resources and read Azure Monitor metrics for each discovered filesystem.
-
-### 5. Apply the manifest
-
-Update [deploy/kubernetes.yaml](deploy/kubernetes.yaml) so the SA annotation `azure.workload.identity/client-id` matches your `$CLIENT_ID`, set `AZURE_SUBSCRIPTION_IDS` in the deployment env, then:
+Deploy:
 
 ```bash
 make deploy
-make deploy-image IMAGE=<your-repo>/vmss-metrics-exporter TAG=<tag>
+make deploy-image IMAGE=<repo>/vmss-metrics-exporter TAG=<tag>
 make rollout
 ```
 
-### 6. Verify Workload Identity end-to-end
+View logs:
 
 ```bash
-POD=$(kubectl get pod -n default -l app.kubernetes.io/name=vmss-metrics-exporter -o jsonpath='{.items[0].metadata.name}')
-
-# Webhook-injected env (token file must be non-empty)
-kubectl exec -n default "$POD" -- sh -c 'env | grep ^AZURE_ ; test -s "$AZURE_FEDERATED_TOKEN_FILE" && echo token-file-ok'
-
-# Should show successful collection and no AADSTS / AuthorizationFailed errors
-kubectl logs -n default "$POD" --tail=50
-
-# Read the exporter directly from inside the pod
-kubectl exec -n default "$POD" -- python -c \
-  "import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:8000/metrics').read().decode())" \
-  | grep -E 'azure_vmss_(instance_count|capacity|exporter_(last_success|collection_errors|vmss_total))'
+make logs
 ```
 
-Common failure signatures:
-
-| Symptom in logs | Likely cause |
-| --- | --- |
-| `AADSTS700211: No matching federated identity record` | Issuer/subject/audience mismatch on the federated credential. |
-| `AADSTS53003: Access has been blocked by Conditional Access policies` | Tenant CA policy applies to workload identities; admin must exclude the SP. |
-| `AuthorizationFailed` on Resource Graph | Missing/insufficient RBAC; assign `Reader` at subscription scope. |
-| `WorkloadIdentityCredential authentication unavailable` | Pod missing `azure.workload.identity/use: "true"` label; webhook did not mutate. |
-
-## Scrape with Azure Monitor managed Prometheus
-
-[deploy/ama-metrics-settings-configmap-v1.yaml](deploy/ama-metrics-settings-configmap-v1.yaml) contains a custom scrape job for the [Azure Monitor managed Prometheus addon](https://learn.microsoft.com/azure/azure-monitor/containers/prometheus-metrics-overview):
-
-- ConfigMap **must** be named `ama-metrics-prometheus-config` and live in `kube-system` — that is the only path the addon reads.
-- Uses `role: pod` so each replica is scraped directly; preserves `namespace`, `pod`, and `node` labels.
-- Keeps only pods labelled `app.kubernetes.io/name=vmss-metrics-exporter` in `default` with container port name `metrics`.
-
-Prerequisite — managed Prometheus addon enabled on the cluster:
+Port-forward the exporter:
 
 ```bash
-az aks update -g <aks-rg> -n <aks-name> --enable-azure-monitor-metrics
+make port-forward
 ```
 
-Apply and reload:
+## Grafana
 
-```bash
-kubectl apply -f deploy/ama-metrics-settings-configmap-v1.yaml
-kubectl rollout restart -n kube-system deployment/ama-metrics
-kubectl rollout status  -n kube-system deployment/ama-metrics
-```
+Import the dashboards from `deploy/`:
 
-Verify the target is healthy (collector exposes Prometheus' targets API on IPv6 localhost inside the pod):
+- `deploy/grafana-dashboard-vmss.json`
+- `deploy/grafana-dashboard-lustre.json`
 
-```bash
-AMA_POD=$(kubectl get pod -n kube-system -l rsName=ama-metrics -o jsonpath='{.items[0].metadata.name}')
-kubectl exec -n kube-system "$AMA_POD" -c prometheus-collector -- \
-  sh -c 'curl -sS "http://[::1]:9090/api/v1/targets?state=active"' \
-  | python3 -c "import json,sys;d=json.load(sys.stdin);[print(t['labels'].get('pod'), t['scrapeUrl'], t['health'], t.get('lastError','')) for t in d['data']['activeTargets'] if t['labels'].get('job')=='azure_metrics_vmss']"
-```
+The Managed Lustre dashboard uses filesystem inventory metrics for dropdowns, so discovered filesystems remain visible even when Azure Monitor has no current OST or MDT sample for a filesystem.
 
-Expected: at least one line ending with `up` and an empty `lastError`. The sample config scrapes every `30s` so Managed Lustre alerts can evaluate quickly while exporter scrapes remain cached and cheap.
-
-## Managed Lustre real-time alerting
-
-Managed Lustre capacity alerts should use a faster path than VMSS inventory:
-
-- **Exporter poll**: `LUSTRE_POLL_INTERVAL_SECONDS=60` by default. VMSS still uses `POLL_INTERVAL_SECONDS=300`.
-- **Azure Monitor metric granularity**: `LUSTRE_METRICS_INTERVAL=PT1M` because Managed Lustre OST metrics support one-minute samples.
-- **Prometheus scrape**: `deploy/ama-metrics-settings-configmap-v1.yaml` uses `scrape_interval: 30s`.
-- **Alert freshness**: use both exporter freshness and Azure Monitor sample timestamp freshness.
-
-The exporter intentionally exposes separate Lustre health metrics so alerts do not rely on VMSS collector state:
+## Prometheus examples
 
 ```promql
-# Exporter-side Lustre collection freshness
-time() - azure_managed_lustre_last_success_timestamp_seconds
-
-# Azure Monitor sample freshness per OST
-time() - azure_managed_lustre_ost_sample_timestamp_seconds
-```
-
-[deploy/lustre-alert-rules.yaml](deploy/lustre-alert-rules.yaml) contains starter Prometheus alert rules:
-
-- `AzureManagedLustreCollectorStale` — no successful Lustre collection for more than 3 minutes.
-- `AzureManagedLustreSampleStale` — an OST sample is older than 5 minutes.
-- `AzureManagedLustreCollectionErrors` — collection errors are occurring.
-- `AzureManagedLustreOstAvailablePercentLow` — an OST has less than 10% available for 5 minutes.
-- `AzureManagedLustreOstAvailablePercentCritical` — an OST has less than 5% available for 1 minute.
-- `AzureManagedLustreOstBytesAvailableLow` — an OST has less than 1 TiB available for 5 minutes.
-- `AzureManagedLustreOstBytesAvailableCritical` — an OST has less than 100 GiB available for 1 minute.
-
-Prefer the 10% / 5% thresholds for primary capacity alerting because they normalize OSTs of different sizes. Keep or tune the 1 TiB / 100 GiB absolute thresholds as a safety net for workloads where a fixed amount of free space is operationally important. For Azure Managed Prometheus, create equivalent Azure Monitor managed Prometheus rule groups from these PromQL expressions; for self-managed Prometheus or kube-prometheus-stack, load the YAML as a standard rule file.
-
-## Grafana dashboard
-
-[deploy/grafana-dashboard-vmss.json](deploy/grafana-dashboard-vmss.json) is an importable Grafana dashboard (`Azure VMSS Inventory & Trends`, UID `azure-vmss-exporter`). It includes:
-
-- Overview stats: VMSS observed, total VM instances, total desired capacity, capacity-vs-actual drift, exporter freshness, error rate.
-- VMSS instance count trend (per VMSS, step-after).
-- Total instances by subscription and by region.
-- Current snapshot bar gauge and inventory table with computed `drift` column.
-- Collapsible capacity-vs-actual overlay (dashed capacity, solid actual).
-
-Cascading template variables: data source → `job` → `subscription_id` → `location` → `resource_group` → `vmss_name`.
-
-[deploy/grafana-dashboard-lustre.json](deploy/grafana-dashboard-lustre.json) is a separate importable Grafana dashboard (`Azure Managed Lustre OST Capacity`, UID `azure-managed-lustre-ost-capacity`). It includes:
-
-- Overview stats: filesystems observed, OST series observed, total OST bytes available, lowest OST available percentage, Lustre collector freshness, max Azure Monitor sample age, Lustre error rate, and collection duration.
-- Total bytes available trend by filesystem.
-- Bottom-N per-OST trend for the OSTs closest to capacity pressure, ranked by `min` or `avg` available percentage.
-- Rollups by resource group, subscription, and region.
-- Current snapshot bar gauge focused on the lowest available-percentage OSTs and a table with available/used/total bytes plus available percentage.
-
-Lustre dashboard variables: data source → `job` → `subscription_id` → `location` → `resource_group` → `filesystem_name` → `ostnum`.
-
-Import directly into Azure Managed Grafana or any Grafana 10+:
-
-1. **Dashboards → New → Import**.
-2. Upload the JSON.
-3. Pick the Prometheus data source pointed at your Azure Monitor Workspace.
-
-For sidecar-based Grafana (e.g. `kube-prometheus-stack`):
-
-```bash
-kubectl -n <grafana-ns> create configmap grafana-dashboard-vmss \
-  --from-file=vmss.json=deploy/grafana-dashboard-vmss.json \
-  --from-file=lustre.json=deploy/grafana-dashboard-lustre.json \
-  --dry-run=client -o yaml \
-  | kubectl label -f - --local -o yaml grafana_dashboard=1 \
-  | kubectl apply -f -
-```
-
-(Use whatever label your sidecar watches for.)
-
-## PromQL examples
-
-```promql
-# Current VMSS instance counts
+# VMSS desired vs actual
+azure_vmss_capacity
 azure_vmss_instance_count
 
-# Total VMSS instances by subscription
+# VMSS count by subscription
 sum by (subscription_id) (azure_vmss_instance_count)
 
-# VMSS where desired capacity differs from actual VM count
-azure_vmss_capacity != azure_vmss_instance_count
+# Managed Lustre inventory
+azure_managed_lustre_filesystem_info
 
-# Instances by region
-sum by (subscription_id, location) (azure_vmss_instance_count)
-
-# Instance count enriched with VM size and SKU tier
-azure_vmss_instance_count
-  * on (subscription_id, resource_group, vmss_name) group_left(vm_size, sku_tier)
-    azure_vmss_info
-
-# Instances grouped by VM size
-sum by (vm_size) (
-  azure_vmss_instance_count
-    * on (subscription_id, resource_group, vmss_name) group_left(vm_size)
-      azure_vmss_info
-)
-
-# Exporter freshness
-time() - azure_vmss_exporter_last_success_timestamp_seconds
-
-# Collection error rate
-rate(azure_vmss_exporter_collection_errors_total[5m])
-
-# Managed Lustre OST bytes available by filesystem and OST
-azure_managed_lustre_ost_bytes_available
-
-# Managed Lustre OST available percentage by filesystem and OST
+# Managed Lustre OST available percentage
 azure_managed_lustre_ost_bytes_available_percent
 
-# Managed Lustre OST used and total bytes by filesystem and OST
-azure_managed_lustre_ost_bytes_used
-azure_managed_lustre_ost_bytes_total
-
-# Managed Lustre OST client read/write workload metrics by filesystem and OST
-azure_managed_lustre_client_read_ops
-azure_managed_lustre_client_read_throughput_bytes_per_second
-azure_managed_lustre_client_write_ops
-azure_managed_lustre_client_write_throughput_bytes_per_second
-
-# Managed Lustre MDT capacity and file metrics by filesystem and MDT
-azure_managed_lustre_mdt_bytes_available_percent
+# Managed Lustre MDT file free percentage
 azure_managed_lustre_mdt_files_free_percent
 
-# Managed Lustre MDT operation latency/ops by operation
-azure_managed_lustre_mdt_client_latency_milliseconds
-azure_managed_lustre_mdt_client_ops
+# Managed Lustre read/write throughput by filesystem
+sum by (filesystem_name) (azure_managed_lustre_client_read_throughput_bytes_per_second)
+sum by (filesystem_name) (azure_managed_lustre_client_write_throughput_bytes_per_second)
 
-# Total Managed Lustre bytes available by filesystem
-sum by (subscription_id, resource_group, filesystem_name) (
-  azure_managed_lustre_ost_bytes_available
-)
-
-# Managed Lustre collection error rate
-rate(azure_managed_lustre_collection_errors_total[5m])
-
-# Managed Lustre collection freshness in seconds
+# Collection health
 time() - azure_managed_lustre_last_success_timestamp_seconds
-
-# Managed Lustre Azure Monitor sample age by OST
-time() - azure_managed_lustre_ost_sample_timestamp_seconds
-
-# OSTs below 1 TiB available
-azure_managed_lustre_ost_bytes_available < 1099511627776
-
-# OSTs below 5% available
-azure_managed_lustre_ost_bytes_available_percent < 5
+rate(azure_managed_lustre_collection_errors_total[5m])
 ```
-
-## Operational notes
-
-- The exporter polls VMSS inventory every `POLL_INTERVAL_SECONDS` (default `300`) and Managed Lustre metrics every `LUSTRE_POLL_INTERVAL_SECONDS` (default `60`). Prometheus scrapes return cached gauge values and do not trigger Azure API calls.
-- Deleted VMSS label sets are removed from the exporter on the next successful collection.
-- Deleted Azure Managed Lustre filesystems or OST label sets are removed from the exporter on the next fully successful Managed Lustre collection. During partial Azure Monitor failures, existing Lustre series are retained and freshness/error metrics indicate the issue, avoiding silent loss of capacity signals.
-- Azure Resource Graph has minor indexing latency; expect a brief delay before counts reflect the final state of rapid scale events.
-- Azure Managed Lustre metric values come from Azure Monitor and can lag behind resource discovery briefly; the exporter uses a lookback window and skips OST series with no non-null datapoint rather than emitting misleading zeroes.
-- `azure_vmss_instance_count` is the **actual** child VM resource count; `azure_vmss_capacity` is the **desired** capacity. Use both to detect transitions and provisioning gaps.
 
 ## Development
 
 ```bash
-pytest          # run unit tests
-ruff check .    # lint
-make validate   # both
+make install
+make test
+make lint
+make validate
 ```
