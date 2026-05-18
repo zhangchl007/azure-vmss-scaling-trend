@@ -13,6 +13,7 @@ from prometheus_client.registry import CollectorRegistry
 
 from .models import (
     ManagedLustreCollectionResult,
+    ManagedLustreFilesystem,
     ManagedLustreMdtMetric,
     ManagedLustreMdtOperationMetric,
     ManagedLustreOstMetric,
@@ -60,6 +61,21 @@ LUSTRE_MDT_LABELS = (
 
 LUSTRE_MDT_OPERATION_LABELS = (*LUSTRE_MDT_LABELS, "operation")
 
+LUSTRE_FILESYSTEM_INFO_LABELS = (
+    "subscription_id",
+    "resource_group",
+    "filesystem_name",
+    "location",
+    "sku_tier",
+)
+
+LUSTRE_FILESYSTEM_CAPACITY_LABELS = (
+    "subscription_id",
+    "resource_group",
+    "filesystem_name",
+    "location",
+)
+
 
 class VmssMetricsExporter:
     """Poll Azure and update Prometheus gauges with cached VMSS counts."""
@@ -97,6 +113,12 @@ class VmssMetricsExporter:
         self._active_lustre_mdt_labelsets: set[tuple[str, str, str, str, str]] = set()
         self._active_lustre_mdt_operation_labelsets: set[
             tuple[str, str, str, str, str, str]
+        ] = set()
+        self._active_lustre_filesystem_info_labelsets: set[
+            tuple[str, str, str, str, str]
+        ] = set()
+        self._active_lustre_filesystem_capacity_labelsets: set[
+            tuple[str, str, str, str]
         ] = set()
 
         effective_registry = registry if registry is not None else REGISTRY
@@ -315,6 +337,21 @@ class VmssMetricsExporter:
             "Number of Azure Managed Lustre filesystems discovered in the latest collection.",
             registry=effective_registry,
         )
+        self.lustre_filesystem_info = Gauge(
+            "azure_managed_lustre_filesystem_info",
+            (
+                "Static metadata about each discovered Azure Managed Lustre filesystem. "
+                "The value is always 1."
+            ),
+            LUSTRE_FILESYSTEM_INFO_LABELS,
+            registry=effective_registry,
+        )
+        self.lustre_filesystem_storage_capacity_tib = Gauge(
+            "azure_managed_lustre_filesystem_storage_capacity_tib",
+            "Configured Azure Managed Lustre filesystem storage capacity from Resource Graph.",
+            LUSTRE_FILESYSTEM_CAPACITY_LABELS,
+            registry=effective_registry,
+        )
         self.lustre_ost_total = Gauge(
             "azure_managed_lustre_ost_total",
             "Number of Azure Managed Lustre OST sample series produced by the latest collection.",
@@ -393,6 +430,7 @@ class VmssMetricsExporter:
 
         remove_stale = result.error_count == 0
         if not self._update_lustre_metrics(
+            result.filesystems,
             result.metrics,
             result.operation_metrics,
             result.mdt_metrics,
@@ -514,6 +552,8 @@ class VmssMetricsExporter:
                 self.lustre_mdt_client_latency,
                 self.lustre_mdt_client_ops,
                 self.lustre_mdt_operation_sample_timestamp,
+                self.lustre_filesystem_info,
+                self.lustre_filesystem_storage_capacity_tib,
             ):
                 gauge.clear()
             self._active_labelsets = set()
@@ -522,6 +562,8 @@ class VmssMetricsExporter:
             self._active_lustre_ost_operation_labelsets = set()
             self._active_lustre_mdt_labelsets = set()
             self._active_lustre_mdt_operation_labelsets = set()
+            self._active_lustre_filesystem_info_labelsets = set()
+            self._active_lustre_filesystem_capacity_labelsets = set()
             # Reset summary scalars so dashboards don't show stale totals on the follower.
             self.vmss_total.set(0)
             self.lustre_filesystem_total.set(0)
@@ -621,6 +663,7 @@ class VmssMetricsExporter:
 
     def _update_lustre_metrics(
         self,
+        filesystems: Sequence[ManagedLustreFilesystem],
         metrics: Sequence[ManagedLustreOstMetric],
         operation_metrics: Sequence[ManagedLustreOstOperationMetric],
         mdt_metrics: Sequence[ManagedLustreMdtMetric],
@@ -628,6 +671,12 @@ class VmssMetricsExporter:
         *,
         remove_stale: bool,
     ) -> bool:
+        new_filesystem_info_labelsets = {
+            filesystem.info_label_values for filesystem in filesystems
+        }
+        new_filesystem_capacity_labelsets = {
+            filesystem.capacity_label_values for filesystem in filesystems
+        }
         new_labelsets = {metric.label_values for metric in metrics}
         new_operation_labelsets = {metric.label_values for metric in operation_metrics}
         new_mdt_labelsets = {metric.label_values for metric in mdt_metrics}
@@ -638,6 +687,18 @@ class VmssMetricsExporter:
             if not self._can_write_metrics_locked():
                 return False
             if remove_stale:
+                for stale in (
+                    self._active_lustre_filesystem_info_labelsets
+                    - new_filesystem_info_labelsets
+                ):
+                    with suppress(KeyError):
+                        self.lustre_filesystem_info.remove(*stale)
+                for stale in (
+                    self._active_lustre_filesystem_capacity_labelsets
+                    - new_filesystem_capacity_labelsets
+                ):
+                    with suppress(KeyError):
+                        self.lustre_filesystem_storage_capacity_tib.remove(*stale)
                 for stale in self._active_lustre_ost_labelsets - new_labelsets:
                     for gauge in (
                         self.lustre_ost_bytes_available,
@@ -688,6 +749,12 @@ class VmssMetricsExporter:
                     ):
                         with suppress(KeyError):
                             gauge.remove(*stale)
+
+            for filesystem in filesystems:
+                self.lustre_filesystem_info.labels(*filesystem.info_label_values).set(1)
+                self.lustre_filesystem_storage_capacity_tib.labels(
+                    *filesystem.capacity_label_values
+                ).set(filesystem.storage_capacity_tib)
 
             for metric in metrics:
                 self._set_or_remove_lustre_gauge(
@@ -825,11 +892,19 @@ class VmssMetricsExporter:
                 )
 
             if remove_stale:
+                self._active_lustre_filesystem_info_labelsets = new_filesystem_info_labelsets
+                self._active_lustre_filesystem_capacity_labelsets = (
+                    new_filesystem_capacity_labelsets
+                )
                 self._active_lustre_ost_labelsets = new_labelsets
                 self._active_lustre_ost_operation_labelsets = new_operation_labelsets
                 self._active_lustre_mdt_labelsets = new_mdt_labelsets
                 self._active_lustre_mdt_operation_labelsets = new_mdt_operation_labelsets
             else:
+                self._active_lustre_filesystem_info_labelsets |= new_filesystem_info_labelsets
+                self._active_lustre_filesystem_capacity_labelsets |= (
+                    new_filesystem_capacity_labelsets
+                )
                 self._active_lustre_ost_labelsets |= new_labelsets
                 self._active_lustre_ost_operation_labelsets |= new_operation_labelsets
                 self._active_lustre_mdt_labelsets |= new_mdt_labelsets

@@ -146,7 +146,11 @@ class AzureManagedLustreCollector:
 
         filesystems = tuple(self.discover_filesystems())
         if not filesystems:
-            return ManagedLustreCollectionResult(metrics=(), filesystem_count=0)
+            return ManagedLustreCollectionResult(
+                metrics=(),
+                filesystem_count=0,
+                filesystems=(),
+            )
 
         metrics: list[ManagedLustreOstMetric] = []
         operation_metrics: list[ManagedLustreOstOperationMetric] = []
@@ -217,6 +221,7 @@ class AzureManagedLustreCollector:
             metrics=tuple(metrics),
             filesystem_count=len(filesystems),
             error_count=error_count,
+            filesystems=filesystems,
             operation_metrics=tuple(operation_metrics),
             mdt_metrics=tuple(mdt_metrics),
             mdt_operation_metrics=tuple(mdt_operation_metrics),

@@ -672,6 +672,9 @@ def test_collector_discovers_and_collects_metrics(monkeypatch: pytest.MonkeyPatc
 
     assert rg_client.calls == 1
     assert result.filesystem_count == 1
+    assert len(result.filesystems) == 1
+    assert result.filesystems[0].filesystem_name == "lustre-a"
+    assert result.filesystems[0].storage_capacity_tib == 8.0
     assert result.error_count == 0
     assert len(result.metrics) == 1
     assert result.metrics[0].ostnum == "0"
@@ -734,6 +737,10 @@ def test_collector_isolates_per_filesystem_metric_failures(
     result = collector.collect()
 
     assert result.filesystem_count == 2
+    assert {filesystem.filesystem_name for filesystem in result.filesystems} == {
+        "lustre-a",
+        "lustre-b",
+    }
     assert result.error_count == 1
     assert len(result.metrics) == 1
     assert result.metrics[0].filesystem_name == "lustre-a"

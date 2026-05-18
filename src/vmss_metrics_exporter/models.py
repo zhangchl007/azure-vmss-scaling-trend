@@ -58,6 +58,29 @@ class ManagedLustreFilesystem:
     sku_tier: str = "unknown"
     storage_capacity_tib: float = 0.0
 
+    @property
+    def info_label_values(self) -> tuple[str, str, str, str, str]:
+        """Return labels for the `azure_managed_lustre_filesystem_info` metric."""
+
+        return (
+            self.subscription_id,
+            self.resource_group,
+            self.filesystem_name,
+            self.location,
+            self.sku_tier,
+        )
+
+    @property
+    def capacity_label_values(self) -> tuple[str, str, str, str]:
+        """Return labels for the filesystem storage-capacity metric."""
+
+        return (
+            self.subscription_id,
+            self.resource_group,
+            self.filesystem_name,
+            self.location,
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class ManagedLustreOstMetric:
@@ -230,6 +253,7 @@ class ManagedLustreCollectionResult:
     metrics: tuple[ManagedLustreOstMetric, ...]
     filesystem_count: int
     error_count: int = 0
+    filesystems: tuple[ManagedLustreFilesystem, ...] = ()
     operation_metrics: tuple[ManagedLustreOstOperationMetric, ...] = ()
     mdt_metrics: tuple[ManagedLustreMdtMetric, ...] = ()
     mdt_operation_metrics: tuple[ManagedLustreMdtOperationMetric, ...] = ()

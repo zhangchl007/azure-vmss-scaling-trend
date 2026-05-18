@@ -5,6 +5,7 @@ from prometheus_client import CollectorRegistry, generate_latest
 from vmss_metrics_exporter.collector import VmssMetricsExporter
 from vmss_metrics_exporter.models import (
     ManagedLustreCollectionResult,
+    ManagedLustreFilesystem,
     ManagedLustreMdtMetric,
     ManagedLustreMdtOperationMetric,
     ManagedLustreOstMetric,
@@ -266,6 +267,84 @@ def test_lustre_partial_failure_keeps_existing_series() -> None:
     assert "azure_managed_lustre_collection_errors_total 1.0" in metrics
 
 
+def test_lustre_filesystem_inventory_is_exposed_without_samples() -> None:
+    registry = CollectorRegistry()
+    lustre = ManagedLustreCollectionResult(
+        metrics=(),
+        filesystem_count=1,
+        filesystems=(
+            ManagedLustreFilesystem(
+                "sub-a",
+                "rg-a",
+                "lustre-a",
+                "/subscriptions/sub-a/resourceGroups/rg-a/providers/"
+                "Microsoft.StorageCache/amlFilesystems/lustre-a",
+                "westus3",
+                sku_tier="AMLFS-Durable-Premium-500",
+                storage_capacity_tib=8.0,
+            ),
+        ),
+    )
+    exporter = VmssMetricsExporter(
+        lambda: [],
+        collect_lustre_metrics=lambda: lustre,
+        registry=registry,
+    )
+
+    exporter.collect_lustre_once()
+
+    metrics = generate_latest(registry).decode()
+    info_labels = (
+        'filesystem_name="lustre-a",location="westus3",resource_group="rg-a",'
+        'sku_tier="AMLFS-Durable-Premium-500",subscription_id="sub-a"'
+    )
+    capacity_labels = (
+        'filesystem_name="lustre-a",location="westus3",resource_group="rg-a",'
+        'subscription_id="sub-a"'
+    )
+    assert f"azure_managed_lustre_filesystem_info{{{info_labels}}} 1.0" in metrics
+    assert (
+        f"azure_managed_lustre_filesystem_storage_capacity_tib"
+        f"{{{capacity_labels}}} 8.0" in metrics
+    )
+    assert "azure_managed_lustre_filesystem_total 1.0" in metrics
+    assert "azure_managed_lustre_ost_total 0.0" in metrics
+    assert "azure_managed_lustre_ost_bytes_available{" not in metrics
+
+
+def test_lustre_filesystem_inventory_removes_stale_series() -> None:
+    registry = CollectorRegistry()
+    first = ManagedLustreCollectionResult(
+        metrics=(),
+        filesystem_count=2,
+        filesystems=(
+            ManagedLustreFilesystem("sub-a", "rg-a", "lustre-a", "id-a", "westus3"),
+            ManagedLustreFilesystem("sub-a", "rg-a", "lustre-b", "id-b", "westus3"),
+        ),
+    )
+    second = ManagedLustreCollectionResult(
+        metrics=(),
+        filesystem_count=1,
+        filesystems=(
+            ManagedLustreFilesystem("sub-a", "rg-a", "lustre-a", "id-a", "westus3"),
+        ),
+    )
+    calls = iter([first, second])
+    exporter = VmssMetricsExporter(
+        lambda: [],
+        collect_lustre_metrics=lambda: next(calls),
+        registry=registry,
+    )
+
+    exporter.collect_lustre_once()
+    exporter.collect_lustre_once()
+
+    metrics = generate_latest(registry).decode()
+    assert "lustre-a" in metrics
+    assert "lustre-b" not in metrics
+    assert "azure_managed_lustre_filesystem_total 1.0" in metrics
+
+
 def test_collect_once_isolates_lustre_failures_from_vmss_success() -> None:
     registry = CollectorRegistry()
     counts = [
@@ -321,6 +400,9 @@ def test_set_leader_clears_resource_gauges_on_demotion() -> None:
             ),
         ),
         filesystem_count=1,
+        filesystems=(
+            ManagedLustreFilesystem("sub-a", "rg-a", "lustre-a", "id-a", "westus3"),
+        ),
     )
     exporter = VmssMetricsExporter(
         lambda: counts,
@@ -334,12 +416,14 @@ def test_set_leader_clears_resource_gauges_on_demotion() -> None:
     populated = generate_latest(registry).decode()
     assert "vmss-a" in populated
     assert "lustre-a" in populated
+    assert "azure_managed_lustre_filesystem_info" in populated
     assert "azure_vmss_exporter_is_leader 1.0" in populated
 
     exporter.set_leader(False)
     cleared = generate_latest(registry).decode()
     assert "vmss-a" not in cleared
     assert "lustre-a" not in cleared
+    assert "azure_managed_lustre_filesystem_info{" not in cleared
     assert "azure_vmss_exporter_is_leader 0.0" in cleared
     assert "azure_vmss_exporter_vmss_total 0.0" in cleared
     assert "azure_managed_lustre_filesystem_total 0.0" in cleared
