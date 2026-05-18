@@ -352,6 +352,28 @@ class FakeMetricsClient:
                         },
                     ],
                 },
+                {
+                    "name": "HSMActionErrors",
+                    "timeseries": [
+                        {
+                            "metadata_values": [
+                                {"name": {"value": "mdtnum"}, "value": "0"},
+                            ],
+                            "data": [{"average": 2.0}],
+                        },
+                    ],
+                },
+                {
+                    "name": "HSMCurrentRequests",
+                    "timeseries": [
+                        {
+                            "metadata_values": [
+                                {"name": {"value": "mdtnum"}, "value": "0"},
+                            ],
+                            "data": [{"average": 17.0}],
+                        },
+                    ],
+                },
             ]
         }
 
@@ -368,6 +390,11 @@ def test_amlfs_query_discovers_all_filesystems() -> None:
     assert "filesystemName = name" in AMLFS_FILESYSTEMS_QUERY
     assert "storageCapacityTiB" in AMLFS_FILESYSTEMS_QUERY
     assert "let " not in AMLFS_FILESYSTEMS_QUERY.lower()
+
+
+def test_lustre_metric_query_stays_within_azure_monitor_limit() -> None:
+    # Azure Monitor accepts at most 20 metric names per query_resource request.
+    assert len(LUSTRE_METRICS) <= 20
 
 
 def test_normalize_filesystem_row() -> None:
@@ -614,6 +641,8 @@ def test_normalize_lustre_metrics_response_groups_ost_client_and_mdt_metrics() -
     assert mdt_metrics[0].files_free == 80.0
     assert mdt_metrics[0].files_used == 20.0
     assert mdt_metrics[0].files_total == 100.0
+    assert mdt_metrics[0].hsm_action_errors == 2.0
+    assert mdt_metrics[0].hsm_current_requests == 17.0
     assert len(mdt_operations) == 1
     assert mdt_operations[0].operation == "open"
     assert mdt_operations[0].client_latency_milliseconds == 1.5
@@ -638,6 +667,8 @@ def test_normalize_lustre_metrics_response_accepts_dimensionless_aggregate_serie
                 {"name": "OSTClientOps", "timeseries": [{"data": [{"average": 42.0}]}]},
                 {"name": "MDTBytesAvailable", "timeseries": [{"data": [{"average": 456.0}]}]},
                 {"name": "MDTClientOps", "timeseries": [{"data": [{"average": 84.0}]}]},
+                {"name": "HSMActionErrors", "timeseries": [{"data": [{"average": 3.0}]}]},
+                {"name": "HSMCurrentRequests", "timeseries": [{"data": [{"average": 5.0}]}]},
             ]
         },
     )
@@ -649,6 +680,8 @@ def test_normalize_lustre_metrics_response_accepts_dimensionless_aggregate_serie
     assert ost_operations[0].client_ops == 42.0
     assert mdt_metrics[0].mdtnum == "all"
     assert mdt_metrics[0].bytes_available == 456.0
+    assert mdt_metrics[0].hsm_action_errors == 3.0
+    assert mdt_metrics[0].hsm_current_requests == 5.0
     assert mdt_operations[0].mdtnum == "all"
     assert mdt_operations[0].operation == "all"
     assert mdt_operations[0].client_ops == 84.0
@@ -690,6 +723,8 @@ def test_collector_discovers_and_collects_metrics(monkeypatch: pytest.MonkeyPatc
     assert len(result.mdt_metrics) == 1
     assert result.mdt_metrics[0].bytes_available == 700.0
     assert result.mdt_metrics[0].files_total == 100.0
+    assert result.mdt_metrics[0].hsm_action_errors == 2.0
+    assert result.mdt_metrics[0].hsm_current_requests == 17.0
     assert len(result.mdt_operation_metrics) == 1
     assert result.mdt_operation_metrics[0].operation == "open"
     assert result.mdt_operation_metrics[0].client_ops == 9.0
@@ -827,6 +862,8 @@ def test_summarize_lustre_metrics_includes_mdt_metrics() -> None:
                     files_free=80.0,
                     files_used=20.0,
                     files_total=100.0,
+                    hsm_action_errors=3.0,
+                    hsm_current_requests=5.0,
                 ),
             ),
             mdt_operation_metrics=(
@@ -847,6 +884,8 @@ def test_summarize_lustre_metrics_includes_mdt_metrics() -> None:
     assert "mdtnum" in summary
     assert "700.0" in summary
     assert "open" in summary
+    assert "hsm_action_errors" in summary
+    assert "hsm_current_requests" in summary
     assert "# no Lustre metric samples returned" not in summary
 
 

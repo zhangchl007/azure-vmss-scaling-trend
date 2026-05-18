@@ -71,3 +71,23 @@ groups:
         annotations:
           summary: "Azure Managed Lustre OST bytes available is critically low"
           description: "{{ $labels.filesystem_name }} OST {{ $labels.ostnum }} in {{ $labels.resource_group }} has less than 100 GiB available. Current value: {{ $value | humanize1024 }}B."
+
+      - alert: AzureManagedLustreHsmActionErrors
+        expr: azure_managed_lustre_hsm_action_errors > 0
+        for: 5m
+        labels:
+          severity: warning
+          service: azure-managed-lustre
+        annotations:
+          summary: "Azure Managed Lustre HSM action errors observed"
+          description: "{{ $labels.filesystem_name }} MDT {{ $labels.mdtnum }} in {{ $labels.resource_group }} reported HSM action errors for 5 minutes. Current value: {{ printf \"%.2f\" $value }}."
+
+      - alert: AzureManagedLustreHsmBacklog
+        expr: azure_managed_lustre_hsm_current_requests > 100
+        for: 10m
+        labels:
+          severity: warning
+          service: azure-managed-lustre
+        annotations:
+          summary: "Azure Managed Lustre HSM backlog growing"
+          description: "{{ $labels.filesystem_name }} MDT {{ $labels.mdtnum }} in {{ $labels.resource_group }} has more than 100 HSM in-flight requests for 10 minutes. Tune the threshold for your HSM workload. Current value: {{ printf \"%.2f\" $value }}."

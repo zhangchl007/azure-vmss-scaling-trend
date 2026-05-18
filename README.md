@@ -87,6 +87,8 @@ The exporter discovers resources with Azure Resource Graph, reads Managed Lustre
 | `azure_managed_lustre_mdt_files_used_percent` | Derived MDT file/inode used percentage. |
 | `azure_managed_lustre_mdt_client_latency_milliseconds` | MDT client latency. |
 | `azure_managed_lustre_mdt_client_ops` | MDT client operations. |
+| `azure_managed_lustre_hsm_action_errors` | HSM action errors (`HSMActionErrors`). |
+| `azure_managed_lustre_hsm_current_requests` | HSM in-flight requests (`HSMCurrentRequests`). |
 | `azure_managed_lustre_last_success_timestamp_seconds` | Last successful Managed Lustre collection timestamp. |
 | `azure_managed_lustre_collection_duration_seconds` | Latest Managed Lustre collection duration. |
 | `azure_managed_lustre_collection_errors_total` | Managed Lustre collection error counter. |

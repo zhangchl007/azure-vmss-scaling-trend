@@ -57,6 +57,8 @@ MDT_FILES_USED_METRIC = "MDTFilesUsed"
 MDT_FILES_TOTAL_METRIC = "MDTFilesTotal"
 MDT_CLIENT_LATENCY_METRIC = "MDTClientLatency"
 MDT_CLIENT_OPS_METRIC = "MDTClientOps"
+HSM_ACTION_ERRORS_METRIC = "HSMActionErrors"
+HSM_CURRENT_REQUESTS_METRIC = "HSMCurrentRequests"
 OST_CAPACITY_METRICS = (
     OST_BYTES_AVAILABLE_METRIC,
     OST_BYTES_USED_METRIC,
@@ -83,6 +85,8 @@ MDT_SIMPLE_METRICS = (
     MDT_FILES_FREE_METRIC,
     MDT_FILES_USED_METRIC,
     MDT_FILES_TOTAL_METRIC,
+    HSM_ACTION_ERRORS_METRIC,
+    HSM_CURRENT_REQUESTS_METRIC,
 )
 MDT_OPERATION_METRICS = (
     MDT_CLIENT_LATENCY_METRIC,
@@ -496,6 +500,8 @@ def normalize_lustre_metrics_response(
                 files_free=values.get(MDT_FILES_FREE_METRIC),
                 files_used=values.get(MDT_FILES_USED_METRIC),
                 files_total=values.get(MDT_FILES_TOTAL_METRIC),
+                hsm_action_errors=values.get(HSM_ACTION_ERRORS_METRIC),
+                hsm_current_requests=values.get(HSM_CURRENT_REQUESTS_METRIC),
                 sample_timestamp_seconds=mdt_timestamps.get(mdtnum),
             )
         )
@@ -587,7 +593,8 @@ def summarize_lustre_metrics(result: ManagedLustreCollectionResult) -> str:
         lines.append(
             "subscription_id\tresource_group\tfilesystem_name\tlocation\tmdtnum\t"
             "bytes_available\tbytes_used\tbytes_total\tbytes_available_percent\t"
-            "files_free\tfiles_used\tfiles_total\tfiles_free_percent"
+            "files_free\tfiles_used\tfiles_total\tfiles_free_percent\t"
+            "hsm_action_errors\thsm_current_requests"
         )
         for item in result.mdt_metrics:
             lines.append(
@@ -606,6 +613,8 @@ def summarize_lustre_metrics(result: ManagedLustreCollectionResult) -> str:
                         _optional_float_str(item.files_used),
                         _optional_float_str(item.files_total),
                         _optional_float_str(item.files_free_percent),
+                        _optional_float_str(item.hsm_action_errors),
+                        _optional_float_str(item.hsm_current_requests),
                     ]
                 )
             )

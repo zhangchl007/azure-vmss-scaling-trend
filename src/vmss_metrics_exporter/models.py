@@ -128,6 +128,7 @@ class ManagedLustreOstMetric:
             return None
         return (self.bytes_used / self.bytes_total) * 100
 
+
 @dataclass(frozen=True, slots=True)
 class ManagedLustreOstOperationMetric:
     """Normalized Azure Managed Lustre OST operation metric sample."""
@@ -171,6 +172,8 @@ class ManagedLustreMdtMetric:
     files_free: float | None = None
     files_used: float | None = None
     files_total: float | None = None
+    hsm_action_errors: float | None = None
+    hsm_current_requests: float | None = None
     sample_timestamp_seconds: float | None = None
 
     @property

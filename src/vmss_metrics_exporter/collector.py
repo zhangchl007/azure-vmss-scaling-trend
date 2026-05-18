@@ -314,6 +314,18 @@ class VmssMetricsExporter:
             LUSTRE_MDT_LABELS,
             registry=effective_registry,
         )
+        self.lustre_hsm_action_errors = Gauge(
+            "azure_managed_lustre_hsm_action_errors",
+            "Azure Managed Lustre HSM action errors from Azure Monitor HSMActionErrors.",
+            LUSTRE_MDT_LABELS,
+            registry=effective_registry,
+        )
+        self.lustre_hsm_current_requests = Gauge(
+            "azure_managed_lustre_hsm_current_requests",
+            "Azure Managed Lustre HSM in-flight requests from Azure Monitor HSMCurrentRequests.",
+            LUSTRE_MDT_LABELS,
+            registry=effective_registry,
+        )
         self.lustre_mdt_client_latency = Gauge(
             "azure_managed_lustre_mdt_client_latency_milliseconds",
             "Azure Managed Lustre MDT client latency from Azure Monitor MDTClientLatency.",
@@ -549,6 +561,8 @@ class VmssMetricsExporter:
                 self.lustre_mdt_files_free_percent,
                 self.lustre_mdt_files_used_percent,
                 self.lustre_mdt_sample_timestamp,
+                self.lustre_hsm_action_errors,
+                self.lustre_hsm_current_requests,
                 self.lustre_mdt_client_latency,
                 self.lustre_mdt_client_ops,
                 self.lustre_mdt_operation_sample_timestamp,
@@ -735,6 +749,8 @@ class VmssMetricsExporter:
                         self.lustre_mdt_files_free_percent,
                         self.lustre_mdt_files_used_percent,
                         self.lustre_mdt_sample_timestamp,
+                        self.lustre_hsm_action_errors,
+                        self.lustre_hsm_current_requests,
                     ):
                         with suppress(KeyError):
                             gauge.remove(*stale)
@@ -871,6 +887,16 @@ class VmssMetricsExporter:
                     self.lustre_mdt_files_used_percent,
                     metric.label_values,
                     metric.files_used_percent,
+                )
+                self._set_or_remove_lustre_gauge(
+                    self.lustre_hsm_action_errors,
+                    metric.label_values,
+                    metric.hsm_action_errors,
+                )
+                self._set_or_remove_lustre_gauge(
+                    self.lustre_hsm_current_requests,
+                    metric.label_values,
+                    metric.hsm_current_requests,
                 )
                 self.lustre_mdt_sample_timestamp.labels(*metric.label_values).set(
                     metric.sample_timestamp_seconds or time.time()
