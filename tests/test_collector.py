@@ -349,6 +349,71 @@ def test_set_leader_clears_resource_gauges_on_demotion() -> None:
     assert "azure_managed_lustre_collection_duration_seconds 0.0" in cleared
 
 
+def test_vmss_update_is_skipped_when_leadership_is_lost_mid_collection() -> None:
+    registry = CollectorRegistry()
+    counts = [
+        VmssCount(
+            "sub-a", "rg-a", "vmss-a", "eastus", "Uniform", 3, 5,
+            vm_size="Standard_D2s_v3", sku_tier="Standard",
+        ),
+    ]
+    exporter: VmssMetricsExporter
+
+    def collect_after_demotion() -> list[VmssCount]:
+        exporter.set_leader(False)
+        return counts
+
+    exporter = VmssMetricsExporter(
+        collect_after_demotion,
+        registry=registry,
+        leader_election_enabled=True,
+    )
+    exporter.set_leader(True)
+
+    assert exporter.collect_once() == tuple(counts)
+
+    metrics = generate_latest(registry).decode()
+    assert "vmss-a" not in metrics
+    assert "azure_vmss_exporter_is_leader 0.0" in metrics
+    assert "azure_vmss_exporter_vmss_total 0.0" in metrics
+    assert "azure_vmss_exporter_last_success_timestamp_seconds 0.0" in metrics
+
+
+def test_lustre_update_is_skipped_when_leadership_is_lost_mid_collection() -> None:
+    registry = CollectorRegistry()
+    result = ManagedLustreCollectionResult(
+        metrics=(
+            ManagedLustreOstMetric(
+                "sub-a", "rg-a", "lustre-a", "westus3", "0", 100.0,
+                bytes_used=900.0, bytes_total=1000.0,
+            ),
+        ),
+        filesystem_count=1,
+    )
+    exporter: VmssMetricsExporter
+
+    def collect_lustre_after_demotion() -> ManagedLustreCollectionResult:
+        exporter.set_leader(False)
+        return result
+
+    exporter = VmssMetricsExporter(
+        lambda: [],
+        collect_lustre_metrics=collect_lustre_after_demotion,
+        registry=registry,
+        leader_election_enabled=True,
+    )
+    exporter.set_leader(True)
+
+    assert exporter.collect_lustre_once() == result
+
+    metrics = generate_latest(registry).decode()
+    assert "lustre-a" not in metrics
+    assert "azure_vmss_exporter_is_leader 0.0" in metrics
+    assert "azure_managed_lustre_filesystem_total 0.0" in metrics
+    assert "azure_managed_lustre_ost_total 0.0" in metrics
+    assert "azure_managed_lustre_last_success_timestamp_seconds 0.0" in metrics
+
+
 def test_set_leader_is_noop_when_election_disabled() -> None:
     registry = CollectorRegistry()
     counts = [

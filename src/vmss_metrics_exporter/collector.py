@@ -317,7 +317,7 @@ class VmssMetricsExporter:
         )
         self.lustre_ost_total = Gauge(
             "azure_managed_lustre_ost_total",
-            "Number of Azure Managed Lustre OST series observed in the latest collection.",
+            "Number of Azure Managed Lustre OST sample series produced by the latest collection.",
             registry=effective_registry,
         )
         self.lustre_last_success_timestamp = Gauge(
@@ -358,13 +358,22 @@ class VmssMetricsExporter:
             LOGGER.exception("VMSS metric collection failed")
             raise
 
-        self._update_metrics(counts)
+        if not self._update_metrics(counts):
+            LOGGER.info("Skipped VMSS metric update because leadership was lost mid-collection")
+            return counts
         if self._collect_lustre_metrics is not None:
             with suppress(Exception):
                 self.collect_lustre_once()
-        self.last_success_timestamp.set(time.time())
-        self.collection_duration.set(time.monotonic() - start)
-        self.vmss_total.set(len(counts))
+        with self._metric_lock:
+            if not self._can_write_metrics_locked():
+                LOGGER.info(
+                    "Skipped VMSS collection summary update because leadership was lost "
+                    "mid-collection"
+                )
+                return counts
+            self.last_success_timestamp.set(time.time())
+            self.collection_duration.set(time.monotonic() - start)
+            self.vmss_total.set(len(counts))
         LOGGER.info("Collected metrics for %s VM Scale Sets", len(counts))
         return counts
 
@@ -383,19 +392,31 @@ class VmssMetricsExporter:
             raise
 
         remove_stale = result.error_count == 0
-        self._update_lustre_metrics(
+        if not self._update_lustre_metrics(
             result.metrics,
             result.operation_metrics,
             result.mdt_metrics,
             result.mdt_operation_metrics,
             remove_stale=remove_stale,
-        )
-        self.lustre_filesystem_total.set(result.filesystem_count)
-        self.lustre_ost_total.set(len(result.metrics))
-        if result.error_count:
-            self.lustre_collection_errors.inc(result.error_count)
-        self.lustre_last_success_timestamp.set(time.time())
-        self.lustre_collection_duration.set(time.monotonic() - start)
+        ):
+            LOGGER.info(
+                "Skipped Azure Managed Lustre metric update because leadership was lost "
+                "mid-collection"
+            )
+            return result
+        with self._metric_lock:
+            if not self._can_write_metrics_locked():
+                LOGGER.info(
+                    "Skipped Azure Managed Lustre collection summary update because leadership "
+                    "was lost mid-collection"
+                )
+                return result
+            self.lustre_filesystem_total.set(result.filesystem_count)
+            self.lustre_ost_total.set(len(result.metrics))
+            if result.error_count:
+                self.lustre_collection_errors.inc(result.error_count)
+            self.lustre_last_success_timestamp.set(time.time())
+            self.lustre_collection_duration.set(time.monotonic() - start)
         LOGGER.info(
             "Collected metrics for %s Managed Lustre filesystems and %s OST series%s",
             result.filesystem_count,
@@ -548,22 +569,45 @@ class VmssMetricsExporter:
             LOGGER.exception("VMSS metric collection failed")
             raise
 
-        self._update_metrics(counts)
-        self.last_success_timestamp.set(time.time())
-        self.collection_duration.set(time.monotonic() - start)
-        self.vmss_total.set(len(counts))
+        if not self._update_metrics(counts):
+            LOGGER.info("Skipped VMSS metric update because leadership was lost mid-collection")
+            return counts
+        with self._metric_lock:
+            if not self._can_write_metrics_locked():
+                LOGGER.info(
+                    "Skipped VMSS collection summary update because leadership was lost "
+                    "mid-collection"
+                )
+                return counts
+            self.last_success_timestamp.set(time.time())
+            self.collection_duration.set(time.monotonic() - start)
+            self.vmss_total.set(len(counts))
         LOGGER.info("Collected metrics for %s VM Scale Sets", len(counts))
         return counts
 
-    def _update_metrics(self, counts: Sequence[VmssCount]) -> None:
+    def _can_write_metrics_locked(self) -> bool:
+        """Return whether this process may publish resource metrics.
+
+        Must be called while holding ``_metric_lock`` so it is ordered with
+        ``_clear_resource_gauges`` during leader→follower transitions.
+        """
+
+        return not self._leader_election_enabled or self._is_leader_event.is_set()
+
+    def _update_metrics(self, counts: Sequence[VmssCount]) -> bool:
         new_labelsets = {count.label_values for count in counts}
         new_info_labelsets = {count.info_label_values for count in counts}
         with self._metric_lock:
+            if not self._can_write_metrics_locked():
+                return False
             for stale in self._active_labelsets - new_labelsets:
-                self.instance_count.remove(*stale)
-                self.capacity.remove(*stale)
+                with suppress(KeyError):
+                    self.instance_count.remove(*stale)
+                with suppress(KeyError):
+                    self.capacity.remove(*stale)
             for stale_info in self._active_info_labelsets - new_info_labelsets:
-                self.info.remove(*stale_info)
+                with suppress(KeyError):
+                    self.info.remove(*stale_info)
 
             for count in counts:
                 labels = count.label_values
@@ -573,6 +617,7 @@ class VmssMetricsExporter:
 
             self._active_labelsets = new_labelsets
             self._active_info_labelsets = new_info_labelsets
+            return True
 
     def _update_lustre_metrics(
         self,
@@ -582,7 +627,7 @@ class VmssMetricsExporter:
         mdt_operation_metrics: Sequence[ManagedLustreMdtOperationMetric],
         *,
         remove_stale: bool,
-    ) -> None:
+    ) -> bool:
         new_labelsets = {metric.label_values for metric in metrics}
         new_operation_labelsets = {metric.label_values for metric in operation_metrics}
         new_mdt_labelsets = {metric.label_values for metric in mdt_metrics}
@@ -590,6 +635,8 @@ class VmssMetricsExporter:
             metric.label_values for metric in mdt_operation_metrics
         }
         with self._metric_lock:
+            if not self._can_write_metrics_locked():
+                return False
             if remove_stale:
                 for stale in self._active_lustre_ost_labelsets - new_labelsets:
                     for gauge in (
@@ -787,6 +834,7 @@ class VmssMetricsExporter:
                 self._active_lustre_ost_operation_labelsets |= new_operation_labelsets
                 self._active_lustre_mdt_labelsets |= new_mdt_labelsets
                 self._active_lustre_mdt_operation_labelsets |= new_mdt_operation_labelsets
+            return True
 
     @staticmethod
     def _set_or_remove_lustre_gauge(
