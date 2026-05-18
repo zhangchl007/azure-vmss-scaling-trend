@@ -276,6 +276,26 @@
       "fieldConfig": {"defaults": {"custom": {"align": "auto", "cellOptions": {"type": "auto"}, "inspect": false}}, "overrides": []},
       "options": {"showHeader": true, "cellHeight": "sm", "footer": {"show": false, "reducer": ["sum"], "countRows": false, "fields": ""}},
       "pluginVersion": "10.4.0"
+    },
+    {
+      "type": "table",
+      "id": 17,
+      "title": "All filesystem current key metrics",
+      "description": "Unbounded current Lustre metrics for every selected filesystem. This table is intentionally not Top-N limited, so every discovered cluster with Azure Monitor samples is visible.",
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 41},
+      "targets": [
+        {"expr": "max by (subscription_id, resource_group, filesystem_name, location, ostnum) (azure_managed_lustre_ost_bytes_available_percent{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", filesystem_name=~\"$filesystem_name\", location=~\"$location\", ostnum=~\"$ostnum\"})", "legendFormat": "{{filesystem_name}} OST available %", "refId": "A", "format": "table", "instant": true},
+        {"expr": "max by (subscription_id, resource_group, filesystem_name, location, mdtnum) (azure_managed_lustre_mdt_files_free_percent{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", filesystem_name=~\"$filesystem_name\", location=~\"$location\", mdtnum=~\"$mdtnum\"})", "legendFormat": "{{filesystem_name}} MDT files free %", "refId": "B", "format": "table", "instant": true},
+        {"expr": "max by (subscription_id, resource_group, filesystem_name, location, mdtnum) (azure_managed_lustre_mdt_bytes_available_percent{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", filesystem_name=~\"$filesystem_name\", location=~\"$location\", mdtnum=~\"$mdtnum\"})", "legendFormat": "{{filesystem_name}} MDT bytes available %", "refId": "C", "format": "table", "instant": true},
+        {"expr": "sum by (subscription_id, resource_group, filesystem_name, location) (azure_managed_lustre_client_read_throughput_bytes_per_second{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", filesystem_name=~\"$filesystem_name\", location=~\"$location\", ostnum=~\"$ostnum\"})", "legendFormat": "{{filesystem_name}} read Bps", "refId": "D", "format": "table", "instant": true},
+        {"expr": "sum by (subscription_id, resource_group, filesystem_name, location) (azure_managed_lustre_client_write_throughput_bytes_per_second{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", filesystem_name=~\"$filesystem_name\", location=~\"$location\", ostnum=~\"$ostnum\"})", "legendFormat": "{{filesystem_name}} write Bps", "refId": "E", "format": "table", "instant": true},
+        {"expr": "max by (subscription_id, resource_group, filesystem_name, location, ostnum, operation) (azure_managed_lustre_ost_client_latency_milliseconds{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", filesystem_name=~\"$filesystem_name\", location=~\"$location\", ostnum=~\"$ostnum\"})", "legendFormat": "{{filesystem_name}} OST latency", "refId": "F", "format": "table", "instant": true},
+        {"expr": "max by (subscription_id, resource_group, filesystem_name, location, mdtnum, operation) (azure_managed_lustre_mdt_client_latency_milliseconds{job=\"$job\", subscription_id=~\"$subscription_id\", resource_group=~\"$resource_group\", filesystem_name=~\"$filesystem_name\", location=~\"$location\", mdtnum=~\"$mdtnum\"})", "legendFormat": "{{filesystem_name}} MDT latency", "refId": "G", "format": "table", "instant": true}
+      ],
+      "fieldConfig": {"defaults": {"custom": {"align": "auto", "cellOptions": {"type": "auto"}, "inspect": false}}, "overrides": []},
+      "options": {"showHeader": true, "cellHeight": "sm", "footer": {"show": false, "reducer": ["sum"], "countRows": false, "fields": ""}},
+      "pluginVersion": "10.4.0"
     }
   ],
   "refresh": "1m",
