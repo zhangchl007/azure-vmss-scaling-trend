@@ -1,0 +1,73 @@
+groups:
+  - name: azure-managed-lustre.rules
+    interval: 30s
+    rules:
+      - alert: AzureManagedLustreCollectorStale
+        expr: time() - max(azure_managed_lustre_last_success_timestamp_seconds) > 180
+        for: 2m
+        labels:
+          severity: warning
+          service: azure-managed-lustre
+        annotations:
+          summary: "Azure Managed Lustre exporter collection is stale"
+          description: "The exporter has not completed a Managed Lustre collection for more than 3 minutes. Check exporter logs, Azure auth, Azure Monitor API health, and throttling."
+
+      - alert: AzureManagedLustreSampleStale
+        expr: time() - azure_managed_lustre_ost_sample_timestamp_seconds > 300
+        for: 2m
+        labels:
+          severity: warning
+          service: azure-managed-lustre
+        annotations:
+          summary: "Azure Managed Lustre OST metric sample is stale"
+          description: "{{ $labels.filesystem_name }} OST {{ $labels.ostnum }} has no fresh Azure Monitor OSTBytesAvailable sample for more than 5 minutes."
+
+      - alert: AzureManagedLustreCollectionErrors
+        expr: sum(rate(azure_managed_lustre_collection_errors_total[5m])) > 0
+        for: 2m
+        labels:
+          severity: warning
+          service: azure-managed-lustre
+        annotations:
+          summary: "Azure Managed Lustre collection errors detected"
+          description: "Managed Lustre collection is reporting errors. Partial failures keep existing series to avoid hiding capacity signals, so inspect logs for the affected filesystem."
+
+      - alert: AzureManagedLustreOstAvailablePercentLow
+        expr: azure_managed_lustre_ost_bytes_available_percent < 10
+        for: 5m
+        labels:
+          severity: warning
+          service: azure-managed-lustre
+        annotations:
+          summary: "Azure Managed Lustre OST available percentage is low"
+          description: "{{ $labels.filesystem_name }} OST {{ $labels.ostnum }} in {{ $labels.resource_group }} has less than 10% available for 5 minutes. Current value: {{ printf \"%.2f\" $value }}%."
+
+      - alert: AzureManagedLustreOstAvailablePercentCritical
+        expr: azure_managed_lustre_ost_bytes_available_percent < 5
+        for: 1m
+        labels:
+          severity: critical
+          service: azure-managed-lustre
+        annotations:
+          summary: "Azure Managed Lustre OST available percentage is critically low"
+          description: "{{ $labels.filesystem_name }} OST {{ $labels.ostnum }} in {{ $labels.resource_group }} has less than 5% available. Current value: {{ printf \"%.2f\" $value }}%."
+
+      - alert: AzureManagedLustreOstBytesAvailableLow
+        expr: azure_managed_lustre_ost_bytes_available < 1099511627776
+        for: 5m
+        labels:
+          severity: warning
+          service: azure-managed-lustre
+        annotations:
+          summary: "Azure Managed Lustre OST bytes available is low"
+          description: "{{ $labels.filesystem_name }} OST {{ $labels.ostnum }} in {{ $labels.resource_group }} has less than 1 TiB available for 5 minutes. Current value: {{ $value | humanize1024 }}B."
+
+      - alert: AzureManagedLustreOstBytesAvailableCritical
+        expr: azure_managed_lustre_ost_bytes_available < 107374182400
+        for: 1m
+        labels:
+          severity: critical
+          service: azure-managed-lustre
+        annotations:
+          summary: "Azure Managed Lustre OST bytes available is critically low"
+          description: "{{ $labels.filesystem_name }} OST {{ $labels.ostnum }} in {{ $labels.resource_group }} has less than 100 GiB available. Current value: {{ $value | humanize1024 }}B."

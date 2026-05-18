@@ -1,0 +1,444 @@
+"""Azure Managed Lustre discovery and Azure Monitor metric collection."""
+
+from __future__ import annotations
+
+import logging
+import random
+import re
+import time
+from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta, timezone
+from typing import Any, Protocol
+
+from .azure_resource_graph import build_query_request
+from .models import (
+    ManagedLustreCollectionResult,
+    ManagedLustreFilesystem,
+    ManagedLustreOstMetric,
+)
+
+LOGGER = logging.getLogger(__name__)
+
+AMLFS_FILESYSTEMS_QUERY = """
+Resources
+| where type =~ 'microsoft.storagecache/amlfilesystems'
+| project
+    id,
+    subscriptionId,
+    resourceGroup,
+    filesystemName = name,
+    location,
+    skuTier = tostring(sku.name),
+    storageCapacityTiB = todouble(properties.storageCapacityTiB)
+| order by subscriptionId asc, resourceGroup asc, filesystemName asc
+""".strip()
+
+LUSTRE_METRIC_NAMESPACE = "Microsoft.StorageCache/amlFilesystems"
+OST_BYTES_AVAILABLE_METRIC = "OSTBytesAvailable"
+OST_BYTES_USED_METRIC = "OSTBytesUsed"
+OST_BYTES_TOTAL_METRIC = "OSTBytesTotal"
+OST_CAPACITY_METRICS = (
+    OST_BYTES_AVAILABLE_METRIC,
+    OST_BYTES_USED_METRIC,
+    OST_BYTES_TOTAL_METRIC,
+)
+
+_ISO_DURATION_PATTERN = re.compile(r"^PT(?:(?P<hours>\d+)H)?(?:(?P<minutes>\d+)M)?$", re.IGNORECASE)
+
+
+class ResourceGraphClientProtocol(Protocol):
+    """Protocol for the Resource Graph client subset used by this module."""
+
+    def resources(self, query: object) -> object:
+        """Execute a Resource Graph query request."""
+
+
+class MetricsQueryClientProtocol(Protocol):
+    """Protocol for the Azure Monitor metrics client subset used by this module."""
+
+    def query_resource(
+        self,
+        resource_uri: str,
+        metric_names: Sequence[str],
+        **kwargs: Any,
+    ) -> object:
+        """Query metrics for one Azure resource."""
+
+
+class AzureManagedLustreCollector:
+    """Collect Azure Managed Lustre OST metrics for all configured subscriptions."""
+
+    def __init__(
+        self,
+        resource_graph_client: ResourceGraphClientProtocol,
+        metrics_client: MetricsQueryClientProtocol,
+        subscription_ids: Sequence[str],
+        *,
+        page_size: int = 1000,
+        lookback_minutes: int = 15,
+        interval: str = "PT1M",
+        max_workers: int = 4,
+        max_retries: int = 3,
+        retry_base_delay_seconds: float = 1.0,
+    ) -> None:
+        if not subscription_ids:
+            raise ValueError("subscription_ids cannot be empty")
+        self._resource_graph_client = resource_graph_client
+        self._metrics_client = metrics_client
+        self._subscription_ids = tuple(subscription_ids)
+        self._page_size = page_size
+        self._lookback = timedelta(minutes=lookback_minutes)
+        self._granularity = parse_iso_duration(interval)
+        self._max_workers = max_workers
+        self._max_retries = max_retries
+        self._retry_base_delay_seconds = retry_base_delay_seconds
+
+    def collect(self) -> ManagedLustreCollectionResult:
+        """Return OST bytes-available samples for all discovered AMLFS resources."""
+
+        filesystems = tuple(self.discover_filesystems())
+        if not filesystems:
+            return ManagedLustreCollectionResult(metrics=(), filesystem_count=0)
+
+        metrics: list[ManagedLustreOstMetric] = []
+        error_count = 0
+        worker_count = min(self._max_workers, len(filesystems))
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            futures = {
+                executor.submit(self._collect_filesystem_metrics, filesystem): filesystem
+                for filesystem in filesystems
+            }
+            for future in as_completed(futures):
+                filesystem = futures[future]
+                try:
+                    metrics.extend(future.result())
+                except Exception:  # noqa: BLE001 - isolate per-resource Azure Monitor failures.
+                    error_count += 1
+                    LOGGER.exception(
+                        "Failed to collect Managed Lustre metrics for %s",
+                        filesystem.resource_id,
+                    )
+
+        metrics.sort(
+            key=lambda item: (
+                item.subscription_id,
+                item.resource_group,
+                item.filesystem_name,
+                item.ostnum,
+            )
+        )
+        return ManagedLustreCollectionResult(
+            metrics=tuple(metrics),
+            filesystem_count=len(filesystems),
+            error_count=error_count,
+        )
+
+    def discover_filesystems(self) -> list[ManagedLustreFilesystem]:
+        """Discover Azure Managed Lustre filesystems across configured subscriptions."""
+
+        rows = self._run_paged_query(AMLFS_FILESYSTEMS_QUERY)
+        return [normalize_filesystem_row(row) for row in rows]
+
+    def _run_paged_query(self, query: str) -> list[Mapping[str, Any]]:
+        all_rows: list[Mapping[str, Any]] = []
+        skip_token: str | None = None
+
+        while True:
+            request = build_query_request(
+                subscriptions=self._subscription_ids,
+                query=query,
+                top=self._page_size,
+                skip_token=skip_token,
+            )
+            response = self._execute_with_retry(
+                lambda request=request: self._resource_graph_client.resources(request)
+            )
+            data = getattr(response, "data", None) or []
+            if not isinstance(data, list):
+                raise TypeError(f"Unexpected Resource Graph response data type: {type(data)!r}")
+            all_rows.extend(data)
+
+            skip_token = getattr(response, "skip_token", None)
+            if not skip_token:
+                return all_rows
+
+    def _collect_filesystem_metrics(
+        self, filesystem: ManagedLustreFilesystem
+    ) -> list[ManagedLustreOstMetric]:
+        response = self._execute_with_retry(
+            lambda: self._metrics_client.query_resource(
+                filesystem.resource_id,
+                OST_CAPACITY_METRICS,
+                metric_namespace=LUSTRE_METRIC_NAMESPACE,
+                timespan=self._lookback,
+                granularity=self._granularity,
+                aggregations=["Average"],
+            )
+        )
+        return normalize_ost_capacity_response(filesystem, response)
+
+    def _execute_with_retry(self, operation: Any) -> object:
+        attempt = 0
+        while True:
+            try:
+                return operation()
+            except Exception as exc:  # noqa: BLE001 - Azure SDK raises multiple transient types.
+                if attempt >= self._max_retries or not _is_retryable_exception(exc):
+                    raise
+                delay = self._retry_delay(attempt)
+                LOGGER.warning(
+                    "Azure Managed Lustre collection call failed on attempt %s/%s; "
+                    "retrying in %.2fs: %s",
+                    attempt + 1,
+                    self._max_retries + 1,
+                    delay,
+                    exc,
+                )
+                time.sleep(delay)
+                attempt += 1
+
+    def _retry_delay(self, attempt: int) -> float:
+        jitter = random.uniform(0, self._retry_base_delay_seconds)
+        return (self._retry_base_delay_seconds * (2**attempt)) + jitter
+
+
+def create_metrics_query_client() -> MetricsQueryClientProtocol:
+    """Create an authenticated Azure Monitor metrics query client."""
+
+    try:
+        from azure.monitor.query import MetricsQueryClient
+
+        from .credentials import create_credential
+    except ImportError as exc:  # pragma: no cover - exercised only when dependencies are missing.
+        raise RuntimeError(
+            "azure-monitor-query is not installed. Install the project dependencies first."
+        ) from exc
+
+    return MetricsQueryClient(create_credential())
+
+
+def normalize_filesystem_row(row: Mapping[str, Any]) -> ManagedLustreFilesystem:
+    """Normalize one Resource Graph AMLFS row into a filesystem model."""
+
+    return ManagedLustreFilesystem(
+        subscription_id=_required_str(row, "subscriptionId"),
+        resource_group=_required_str(row, "resourceGroup"),
+        filesystem_name=_required_str(row, "filesystemName"),
+        resource_id=_required_str(row, "id"),
+        location=_optional_str(row, "location", default="unknown"),
+        sku_tier=_optional_str(row, "skuTier", default="unknown"),
+        storage_capacity_tib=_float_value(row.get("storageCapacityTiB"), default=0.0),
+    )
+
+
+def normalize_ost_bytes_available_response(
+    filesystem: ManagedLustreFilesystem,
+    response: object,
+) -> list[ManagedLustreOstMetric]:
+    """Normalize an Azure Monitor response to latest non-null OST samples.
+
+    Kept as a compatibility wrapper for older tests/callers. It now accepts
+    responses containing `OSTBytesAvailable`, `OSTBytesUsed`, and `OSTBytesTotal`.
+    """
+
+    return normalize_ost_capacity_response(filesystem, response)
+
+
+def normalize_ost_capacity_response(
+    filesystem: ManagedLustreFilesystem,
+    response: object,
+) -> list[ManagedLustreOstMetric]:
+    """Normalize Azure Monitor OST capacity metrics into one sample per OST."""
+
+    ost_values: dict[str, dict[str, float | None]] = {}
+    ost_timestamps: dict[str, float] = {}
+
+    for metric in _iter_sequence_attr(response, "metrics"):
+        metric_name = _metric_name(metric)
+        if metric_name not in OST_CAPACITY_METRICS:
+            continue
+        for time_series in _iter_sequence_attr(metric, "timeseries", fallback="time_series"):
+            ostnum = _dimension_value(time_series, "ostnum")
+            if not ostnum:
+                continue
+            latest = _latest_average(time_series)
+            if latest is None:
+                continue
+            value, sample_timestamp_seconds = latest
+            ost_values.setdefault(ostnum, {})[metric_name] = value
+            if sample_timestamp_seconds is not None:
+                ost_timestamps[ostnum] = max(
+                    sample_timestamp_seconds,
+                    ost_timestamps.get(ostnum, 0),
+                )
+
+    results: list[ManagedLustreOstMetric] = []
+    for ostnum, values in ost_values.items():
+        bytes_available = values.get(OST_BYTES_AVAILABLE_METRIC)
+        if bytes_available is None:
+            continue
+        results.append(
+            ManagedLustreOstMetric(
+                subscription_id=filesystem.subscription_id,
+                resource_group=filesystem.resource_group,
+                filesystem_name=filesystem.filesystem_name,
+                location=filesystem.location,
+                ostnum=ostnum,
+                bytes_available=bytes_available,
+                bytes_used=values.get(OST_BYTES_USED_METRIC),
+                bytes_total=values.get(OST_BYTES_TOTAL_METRIC),
+                sample_timestamp_seconds=ost_timestamps.get(ostnum),
+            )
+        )
+    return results
+
+
+def parse_iso_duration(value: str) -> timedelta:
+    """Parse the small ISO-8601 duration subset Azure Monitor intervals use."""
+
+    match = _ISO_DURATION_PATTERN.match(value.strip())
+    if not match:
+        raise ValueError(f"Lustre metrics interval must look like PT1M or PT1H, got {value!r}")
+    hours = int(match.group("hours") or 0)
+    minutes = int(match.group("minutes") or 0)
+    duration = timedelta(hours=hours, minutes=minutes)
+    if duration <= timedelta(0):
+        raise ValueError(f"Lustre metrics interval must be greater than zero, got {value!r}")
+    return duration
+
+
+def summarize_lustre_metrics(result: ManagedLustreCollectionResult) -> str:
+    """Create a compact human-readable summary for one-shot runs."""
+
+    lines = [
+        "subscription_id\tresource_group\tfilesystem_name\tlocation\tostnum\t"
+        "bytes_available\tbytes_used\tbytes_total\tbytes_available_percent"
+    ]
+    for item in result.metrics:
+        lines.append(
+            "\t".join(
+                [
+                    item.subscription_id,
+                    item.resource_group,
+                    item.filesystem_name,
+                    item.location,
+                    item.ostnum,
+                    str(item.bytes_available),
+                    _optional_float_str(item.bytes_used),
+                    _optional_float_str(item.bytes_total),
+                    _optional_float_str(item.bytes_available_percent),
+                ]
+            )
+        )
+    if not result.metrics and result.filesystem_count == 0:
+        lines.append("# no Azure Managed Lustre filesystems discovered")
+    elif not result.metrics:
+        lines.append("# no OST capacity samples returned")
+    return "\n".join(lines)
+
+
+def _optional_float_str(value: float | None) -> str:
+    if value is None:
+        return ""
+    return str(value)
+
+
+def _is_retryable_exception(exc: Exception) -> bool:
+    try:
+        from azure.core.exceptions import ClientAuthenticationError
+        from azure.identity import CredentialUnavailableError
+    except ImportError:  # pragma: no cover - azure deps required at runtime.
+        auth_error_types: tuple[type[BaseException], ...] = ()
+    else:
+        auth_error_types = (ClientAuthenticationError, CredentialUnavailableError)
+    if auth_error_types and isinstance(exc, auth_error_types):
+        return False
+
+    response = getattr(exc, "response", None)
+    status_code = getattr(response, "status_code", None) or getattr(exc, "status_code", None)
+    if status_code is None:
+        return True
+    return status_code in {408, 409, 429, 500, 502, 503, 504}
+
+
+def _required_str(row: Mapping[str, Any], key: str) -> str:
+    value = row.get(key)
+    if value is None or str(value).strip() == "":
+        raise ValueError(f"Resource Graph row is missing required field {key!r}: {row!r}")
+    return str(value)
+
+
+def _optional_str(row: Mapping[str, Any], key: str, *, default: str) -> str:
+    value = row.get(key)
+    if value is None or str(value).strip() == "":
+        return default
+    return str(value)
+
+
+def _float_value(value: Any, *, default: float) -> float:
+    if value is None or value == "":
+        return default
+    return float(value)
+
+
+def _iter_sequence_attr(item: object, name: str, *, fallback: str | None = None) -> list[Any]:
+    value = _attr_or_mapping(item, name)
+    if value is None and fallback is not None:
+        value = _attr_or_mapping(item, fallback)
+    if value is None:
+        return []
+    # Defensively reject scalar str/bytes so we never iterate them as character lists.
+    if isinstance(value, (str, bytes)):
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    return list(value)
+
+
+def _attr_or_mapping(item: object, name: str) -> Any:
+    if isinstance(item, Mapping):
+        return item.get(name)
+    return getattr(item, name, None)
+
+
+def _metric_name(metric: object) -> str | None:
+    name = _attr_or_mapping(metric, "name")
+    value = _attr_or_mapping(name, "value") if name is not None else None
+    return str(value if value is not None else name) if name is not None else None
+
+
+def _dimension_value(time_series: object, dimension_name: str) -> str | None:
+    for metadata in _iter_sequence_attr(time_series, "metadata_values"):
+        name = _attr_or_mapping(metadata, "name")
+        raw_name = _attr_or_mapping(name, "value") if name is not None else None
+        raw_name = raw_name if raw_name is not None else name
+        if raw_name is not None and str(raw_name).lower() == dimension_name.lower():
+            value = _attr_or_mapping(metadata, "value")
+            if value is not None and str(value).strip():
+                return str(value)
+    return None
+
+
+def _latest_average(time_series: object) -> tuple[float, float | None] | None:
+    for point in reversed(_iter_sequence_attr(time_series, "data")):
+        average = _attr_or_mapping(point, "average")
+        if average is not None:
+            return float(average), _timestamp_seconds(point)
+    return None
+
+
+def _timestamp_seconds(point: object) -> float | None:
+    value = _attr_or_mapping(point, "timestamp") or _attr_or_mapping(point, "time_stamp")
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.timestamp()
+    if isinstance(value, str):
+        normalized = value.replace("Z", "+00:00")
+        return datetime.fromisoformat(normalized).timestamp()
+    return None

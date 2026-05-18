@@ -10,13 +10,19 @@ import threading
 
 from prometheus_client import start_http_server
 
+from .azure_managed_lustre import (
+    AzureManagedLustreCollector,
+    create_metrics_query_client,
+    summarize_lustre_metrics,
+)
 from .azure_resource_graph import (
     AzureResourceGraphVmssCollector,
+    ResourceGraphClientProtocol,
     create_resource_graph_client,
     summarize_counts,
 )
 from .collector import VmssMetricsExporter
-from .config import load_settings
+from .config import Settings, load_settings
 
 LOGGER = logging.getLogger(__name__)
 
@@ -35,28 +41,39 @@ def main(argv: list[str] | None = None) -> int:
     try:
         settings = load_settings(require_subscription_ids=True)
         _configure_logging(settings.log_level)
+        resource_graph_client = create_resource_graph_client()
         collector = AzureResourceGraphVmssCollector(
-            create_resource_graph_client(),
+            resource_graph_client,
             settings.subscription_ids,
             page_size=settings.arg_page_size,
             max_retries=settings.arg_max_retries,
             retry_base_delay_seconds=settings.arg_retry_base_delay_seconds,
         )
+        lustre_collector = _create_lustre_collector(settings, resource_graph_client)
 
         if args.once:
             print(summarize_counts(collector.collect()))
+            if lustre_collector is not None:
+                print()
+                print("Azure Managed Lustre OSTBytesAvailable")
+                print(summarize_lustre_metrics(lustre_collector.collect()))
             return 0
 
         exporter = VmssMetricsExporter(
             collector.collect,
+            collect_lustre_metrics=lustre_collector.collect if lustre_collector else None,
             poll_interval_seconds=settings.poll_interval_seconds,
+            lustre_poll_interval_seconds=settings.lustre_poll_interval_seconds,
         )
         start_http_server(settings.port, addr=settings.host)
         LOGGER.info(
-            "VMSS metrics exporter listening on http://%s:%s/metrics; polling every %ss",
+            "VMSS metrics exporter listening on http://%s:%s/metrics; VMSS polling every %ss; "
+            "Managed Lustre metrics %s%s",
             settings.host,
             settings.port,
             settings.poll_interval_seconds,
+            "enabled" if lustre_collector else "disabled",
+            f" every {settings.lustre_poll_interval_seconds}s" if lustre_collector else "",
         )
         exporter.start()
         _wait_for_shutdown_signal()
@@ -68,6 +85,25 @@ def main(argv: list[str] | None = None) -> int:
         logging.basicConfig(level=logging.ERROR, format="%(levelname)s %(name)s: %(message)s")
         LOGGER.exception("Exporter failed to start: %s", exc)
         return 1
+
+
+def _create_lustre_collector(
+    settings: Settings,
+    resource_graph_client: ResourceGraphClientProtocol,
+) -> AzureManagedLustreCollector | None:
+    if not settings.enable_managed_lustre_metrics:
+        return None
+    return AzureManagedLustreCollector(
+        resource_graph_client,
+        create_metrics_query_client(),
+        settings.subscription_ids,
+        page_size=settings.arg_page_size,
+        lookback_minutes=settings.lustre_metrics_lookback_minutes,
+        interval=settings.lustre_metrics_interval,
+        max_workers=settings.lustre_metrics_max_workers,
+        max_retries=settings.arg_max_retries,
+        retry_base_delay_seconds=settings.arg_retry_base_delay_seconds,
+    )
 
 
 def _configure_logging(level_name: str) -> None:

@@ -1,8 +1,8 @@
-# Azure VMSS Metrics Exporter
+# Azure VMSS and Managed Lustre Metrics Exporter
 
-Python Prometheus exporter that periodically inventories every Azure VM Scale Set (VMSS) in one or more subscriptions and exposes their names, desired capacity, and actual child-VM counts as Prometheus gauges.
+Python Prometheus exporter that periodically inventories every Azure VM Scale Set (VMSS) and Azure Managed Lustre filesystem in one or more subscriptions. It exposes VMSS names, desired capacity, actual child-VM counts, and Managed Lustre OST available/used/total capacity as Prometheus gauges.
 
-Azure Monitor does not provide a simple native subscription-wide metric for "VMSS name and current instance count". This exporter treats the problem as Azure inventory/state sampling: it uses **Azure Resource Graph** to query all configured subscriptions in one request pattern and exposes the result as cached gauges on `/metrics`.
+Azure Monitor does not provide a simple native subscription-wide metric for "VMSS name and current instance count". This exporter treats the problem as Azure inventory/state sampling: it uses **Azure Resource Graph** to query all configured subscriptions in one request pattern and exposes the result as cached gauges on `/metrics`. For Azure Managed Lustre, Resource Graph discovers all `Microsoft.StorageCache/amlFilesystems` resources and Azure Monitor provides per-filesystem `OSTBytesAvailable`, `OSTBytesUsed`, and `OSTBytesTotal` samples.
 
 ## Repo layout
 
@@ -15,7 +15,9 @@ Azure Monitor does not provide a simple native subscription-wide metric for "VMS
 ├── deploy/
 │   ├── kubernetes.yaml                   # ServiceAccount + Deployment + Service (Workload Identity)
 │   ├── ama-metrics-settings-configmap-v1.yaml  # Azure Managed Prometheus scrape config
-│   └── grafana-dashboard-vmss.json       # importable Grafana dashboard
+│   ├── grafana-dashboard-vmss.json       # importable VMSS Grafana dashboard
+│   ├── grafana-dashboard-lustre.json     # importable Managed Lustre Grafana dashboard
+│   └── lustre-alert-rules.yaml           # Prometheus alert rules for low/stale Lustre capacity
 ├── src/vmss_metrics_exporter/
 │   ├── azure_resource_graph.py
 │   ├── collector.py
@@ -36,6 +38,17 @@ Azure Monitor does not provide a simple native subscription-wide metric for "VMS
 | `azure_vmss_exporter_collection_duration_seconds` | Gauge | Duration of the most recent collection attempt. |
 | `azure_vmss_exporter_collection_errors_total` | Counter | Total collection errors observed by this process. |
 | `azure_vmss_exporter_vmss_total` | Gauge | Number of VMSS observed in the most recent successful collection. |
+| `azure_managed_lustre_ost_bytes_available` | Gauge | Azure Managed Lustre `OSTBytesAvailable` metric in bytes, one series per filesystem OST. |
+| `azure_managed_lustre_ost_bytes_used` | Gauge | Azure Managed Lustre `OSTBytesUsed` metric in bytes, one series per filesystem OST when Azure Monitor returns it. |
+| `azure_managed_lustre_ost_bytes_total` | Gauge | Azure Managed Lustre `OSTBytesTotal` metric in bytes, one series per filesystem OST when Azure Monitor returns it. |
+| `azure_managed_lustre_ost_bytes_available_percent` | Gauge | Derived available percentage: `OSTBytesAvailable / OSTBytesTotal * 100`. Use this for normalized capacity alerts. |
+| `azure_managed_lustre_ost_bytes_used_percent` | Gauge | Derived used percentage: `OSTBytesUsed / OSTBytesTotal * 100`. |
+| `azure_managed_lustre_ost_sample_timestamp_seconds` | Gauge | Unix timestamp of the Azure Monitor sample backing each OST bytes-available series. Use this for stale-sample alerts. |
+| `azure_managed_lustre_filesystem_total` | Gauge | Number of Azure Managed Lustre filesystems discovered in the latest collection. |
+| `azure_managed_lustre_ost_total` | Gauge | Number of Azure Managed Lustre OST series observed in the latest collection. |
+| `azure_managed_lustre_last_success_timestamp_seconds` | Gauge | Unix timestamp of the last successful Managed Lustre collection. |
+| `azure_managed_lustre_collection_duration_seconds` | Gauge | Duration of the latest Managed Lustre collection attempt. |
+| `azure_managed_lustre_collection_errors_total` | Counter | Total Managed Lustre collection errors observed by this process. |
 
 Labels on `azure_vmss_instance_count` and `azure_vmss_capacity`:
 
@@ -51,6 +64,14 @@ Labels on `azure_vmss_info` (all five above, **plus**):
 - `sku_tier` — the VMSS SKU tier (typically `Standard`).
 
 The info-metric pattern keeps `vm_size` *out of the count gauge labelsets*, so resizing a VMSS does not break the historical time series of `azure_vmss_instance_count` / `azure_vmss_capacity`. Example PromQL to show instance counts with VM size:
+
+Labels on Managed Lustre per-OST capacity metrics:
+
+- `subscription_id`
+- `resource_group`
+- `filesystem_name`
+- `location`
+- `ostnum` — Azure Monitor `ostnum` dimension from the OST capacity metrics.
 
 ```promql
 azure_vmss_instance_count
@@ -85,6 +106,11 @@ The exporter reads configuration from environment variables (and optionally a lo
 | `ARG_PAGE_SIZE` | _(library default)_ | Optional Resource Graph page size. |
 | `ARG_MAX_RETRIES` | _(library default)_ | Optional retry count for transient errors. |
 | `ARG_RETRY_BASE_DELAY_SECONDS` | _(library default)_ | Optional retry backoff base. |
+| `ENABLE_MANAGED_LUSTRE_METRICS` | `true` | Discover all Azure Managed Lustre filesystems and query Azure Monitor for `OSTBytesAvailable`, `OSTBytesUsed`, and `OSTBytesTotal`. |
+| `LUSTRE_POLL_INTERVAL_SECONDS` | `60` | How often to query Azure Monitor for Managed Lustre metrics. This is intentionally independent from VMSS inventory polling for faster capacity alerting. |
+| `LUSTRE_METRICS_LOOKBACK_MINUTES` | `15` | Azure Monitor lookback window used to find the latest non-null OST sample. |
+| `LUSTRE_METRICS_INTERVAL` | `PT1M` | Azure Monitor metric granularity for Managed Lustre queries. |
+| `LUSTRE_METRICS_MAX_WORKERS` | `4` | Maximum concurrent per-filesystem Azure Monitor metric queries. |
 
 Authentication uses a resilient credential chain implemented in
 [`src/vmss_metrics_exporter/credentials.py`](src/vmss_metrics_exporter/credentials.py):
@@ -259,6 +285,8 @@ for SUB in <subscription-id-1> <subscription-id-2>; do
 done
 ```
 
+  `Reader` at subscription scope is also the simplest supported role for Managed Lustre collection because the exporter must discover AMLFS resources and read Azure Monitor metrics for each discovered filesystem.
+
 ### 5. Apply the manifest
 
 Update [deploy/kubernetes.yaml](deploy/kubernetes.yaml) so the SA annotation `azure.workload.identity/client-id` matches your `$CLIENT_ID`, set `AZURE_SUBSCRIPTION_IDS` in the deployment env, then:
@@ -326,7 +354,38 @@ kubectl exec -n kube-system "$AMA_POD" -c prometheus-collector -- \
   | python3 -c "import json,sys;d=json.load(sys.stdin);[print(t['labels'].get('pod'), t['scrapeUrl'], t['health'], t.get('lastError','')) for t in d['data']['activeTargets'] if t['labels'].get('job')=='azure_metrics_vmss']"
 ```
 
-Expected: at least one line ending with `up` and an empty `lastError`. Metrics flow into the linked Azure Monitor Workspace within ~1 minute.
+Expected: at least one line ending with `up` and an empty `lastError`. The sample config scrapes every `30s` so Managed Lustre alerts can evaluate quickly while exporter scrapes remain cached and cheap.
+
+## Managed Lustre real-time alerting
+
+Managed Lustre capacity alerts should use a faster path than VMSS inventory:
+
+- **Exporter poll**: `LUSTRE_POLL_INTERVAL_SECONDS=60` by default. VMSS still uses `POLL_INTERVAL_SECONDS=300`.
+- **Azure Monitor metric granularity**: `LUSTRE_METRICS_INTERVAL=PT1M` because the OST capacity metrics support one-minute samples.
+- **Prometheus scrape**: `deploy/ama-metrics-settings-configmap-v1.yaml` uses `scrape_interval: 30s`.
+- **Alert freshness**: use both exporter freshness and Azure Monitor sample timestamp freshness.
+
+The exporter intentionally exposes separate Lustre health metrics so alerts do not rely on VMSS collector state:
+
+```promql
+# Exporter-side Lustre collection freshness
+time() - azure_managed_lustre_last_success_timestamp_seconds
+
+# Azure Monitor sample freshness per OST
+time() - azure_managed_lustre_ost_sample_timestamp_seconds
+```
+
+[deploy/lustre-alert-rules.yaml](deploy/lustre-alert-rules.yaml) contains starter Prometheus alert rules:
+
+- `AzureManagedLustreCollectorStale` — no successful Lustre collection for more than 3 minutes.
+- `AzureManagedLustreSampleStale` — an OST sample is older than 5 minutes.
+- `AzureManagedLustreCollectionErrors` — collection errors are occurring.
+- `AzureManagedLustreOstAvailablePercentLow` — an OST has less than 10% available for 5 minutes.
+- `AzureManagedLustreOstAvailablePercentCritical` — an OST has less than 5% available for 1 minute.
+- `AzureManagedLustreOstBytesAvailableLow` — an OST has less than 1 TiB available for 5 minutes.
+- `AzureManagedLustreOstBytesAvailableCritical` — an OST has less than 100 GiB available for 1 minute.
+
+Prefer the 10% / 5% thresholds for primary capacity alerting because they normalize OSTs of different sizes. Keep or tune the 1 TiB / 100 GiB absolute thresholds as a safety net for workloads where a fixed amount of free space is operationally important. For Azure Managed Prometheus, create equivalent Azure Monitor managed Prometheus rule groups from these PromQL expressions; for self-managed Prometheus or kube-prometheus-stack, load the YAML as a standard rule file.
 
 ## Grafana dashboard
 
@@ -340,6 +399,16 @@ Expected: at least one line ending with `up` and an empty `lastError`. Metrics f
 
 Cascading template variables: data source → `job` → `subscription_id` → `location` → `resource_group` → `vmss_name`.
 
+[deploy/grafana-dashboard-lustre.json](deploy/grafana-dashboard-lustre.json) is a separate importable Grafana dashboard (`Azure Managed Lustre OST Capacity`, UID `azure-managed-lustre-ost-capacity`). It includes:
+
+- Overview stats: filesystems observed, OST series observed, total OST bytes available, lowest OST available percentage, Lustre collector freshness, max Azure Monitor sample age, Lustre error rate, and collection duration.
+- Total bytes available trend by filesystem.
+- Bottom-N per-OST trend for the OSTs closest to capacity pressure, ranked by `min` or `avg` available percentage.
+- Rollups by resource group, subscription, and region.
+- Current snapshot bar gauge focused on the lowest available-percentage OSTs and a table with available/used/total bytes plus available percentage.
+
+Lustre dashboard variables: data source → `job` → `subscription_id` → `location` → `resource_group` → `filesystem_name` → `ostnum`.
+
 Import directly into Azure Managed Grafana or any Grafana 10+:
 
 1. **Dashboards → New → Import**.
@@ -351,6 +420,7 @@ For sidecar-based Grafana (e.g. `kube-prometheus-stack`):
 ```bash
 kubectl -n <grafana-ns> create configmap grafana-dashboard-vmss \
   --from-file=vmss.json=deploy/grafana-dashboard-vmss.json \
+  --from-file=lustre.json=deploy/grafana-dashboard-lustre.json \
   --dry-run=client -o yaml \
   | kubectl label -f - --local -o yaml grafana_dashboard=1 \
   | kubectl apply -f -
@@ -390,13 +460,45 @@ time() - azure_vmss_exporter_last_success_timestamp_seconds
 
 # Collection error rate
 rate(azure_vmss_exporter_collection_errors_total[5m])
+
+# Managed Lustre OST bytes available by filesystem and OST
+azure_managed_lustre_ost_bytes_available
+
+# Managed Lustre OST available percentage by filesystem and OST
+azure_managed_lustre_ost_bytes_available_percent
+
+# Managed Lustre OST used and total bytes by filesystem and OST
+azure_managed_lustre_ost_bytes_used
+azure_managed_lustre_ost_bytes_total
+
+# Total Managed Lustre bytes available by filesystem
+sum by (subscription_id, resource_group, filesystem_name) (
+  azure_managed_lustre_ost_bytes_available
+)
+
+# Managed Lustre collection error rate
+rate(azure_managed_lustre_collection_errors_total[5m])
+
+# Managed Lustre collection freshness in seconds
+time() - azure_managed_lustre_last_success_timestamp_seconds
+
+# Managed Lustre Azure Monitor sample age by OST
+time() - azure_managed_lustre_ost_sample_timestamp_seconds
+
+# OSTs below 1 TiB available
+azure_managed_lustre_ost_bytes_available < 1099511627776
+
+# OSTs below 5% available
+azure_managed_lustre_ost_bytes_available_percent < 5
 ```
 
 ## Operational notes
 
-- The exporter polls Azure every `POLL_INTERVAL_SECONDS` (default `300`). Prometheus scrapes return cached gauge values and do not trigger Azure API calls.
+- The exporter polls VMSS inventory every `POLL_INTERVAL_SECONDS` (default `300`) and Managed Lustre metrics every `LUSTRE_POLL_INTERVAL_SECONDS` (default `60`). Prometheus scrapes return cached gauge values and do not trigger Azure API calls.
 - Deleted VMSS label sets are removed from the exporter on the next successful collection.
+- Deleted Azure Managed Lustre filesystems or OST label sets are removed from the exporter on the next fully successful Managed Lustre collection. During partial Azure Monitor failures, existing Lustre series are retained and freshness/error metrics indicate the issue, avoiding silent loss of capacity signals.
 - Azure Resource Graph has minor indexing latency; expect a brief delay before counts reflect the final state of rapid scale events.
+- Azure Managed Lustre metric values come from Azure Monitor and can lag behind resource discovery briefly; the exporter uses a lookback window and skips OST series with no non-null datapoint rather than emitting misleading zeroes.
 - `azure_vmss_instance_count` is the **actual** child VM resource count; `azure_vmss_capacity` is the **desired** capacity. Use both to detect transitions and provisioning gaps.
 
 ## Development

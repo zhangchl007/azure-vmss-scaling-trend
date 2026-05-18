@@ -22,6 +22,11 @@ class Settings:
     arg_page_size: int = 1000
     arg_max_retries: int = 3
     arg_retry_base_delay_seconds: float = 1.0
+    enable_managed_lustre_metrics: bool = True
+    lustre_poll_interval_seconds: int = 60
+    lustre_metrics_lookback_minutes: int = 15
+    lustre_metrics_interval: str = "PT1M"
+    lustre_metrics_max_workers: int = 4
 
 
 def load_settings(*, require_subscription_ids: bool = True) -> Settings:
@@ -50,6 +55,19 @@ def load_settings(*, require_subscription_ids: bool = True) -> Settings:
         arg_max_retries=_get_int("ARG_MAX_RETRIES", default=3, minimum=0, maximum=10),
         arg_retry_base_delay_seconds=_get_float(
             "ARG_RETRY_BASE_DELAY_SECONDS", default=1.0, minimum=0.0, maximum=60.0
+        ),
+        enable_managed_lustre_metrics=_get_bool(
+            "ENABLE_MANAGED_LUSTRE_METRICS", default=True
+        ),
+        lustre_poll_interval_seconds=_get_int(
+            "LUSTRE_POLL_INTERVAL_SECONDS", default=60, minimum=15
+        ),
+        lustre_metrics_lookback_minutes=_get_int(
+            "LUSTRE_METRICS_LOOKBACK_MINUTES", default=15, minimum=1, maximum=1440
+        ),
+        lustre_metrics_interval=os.getenv("LUSTRE_METRICS_INTERVAL", "PT1M"),
+        lustre_metrics_max_workers=_get_int(
+            "LUSTRE_METRICS_MAX_WORKERS", default=4, minimum=1, maximum=32
         ),
     )
 
@@ -103,3 +121,15 @@ def _get_float(
     if maximum is not None and value > maximum:
         raise ValueError(f"{name} must be <= {maximum}, got {value}")
     return value
+
+
+def _get_bool(name: str, *, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "off"}:
+        return False
+    raise ValueError(f"{name} must be a boolean, got {raw!r}")

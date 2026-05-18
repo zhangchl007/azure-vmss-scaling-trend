@@ -26,7 +26,7 @@ spec:
       serviceAccountName: default
       containers:
         - name: exporter
-          image: zhangchl007/vmss-metrics-exporter:v7
+          image: zhangchl007/vmss-metrics-exporter:v9
           imagePullPolicy: IfNotPresent
           ports:
             - name: metrics
@@ -80,6 +80,16 @@ spec:
               value: "8000"
             - name: LOG_LEVEL
               value: "INFO"
+            - name: ENABLE_MANAGED_LUSTRE_METRICS
+              value: "true"
+            - name: LUSTRE_POLL_INTERVAL_SECONDS
+              value: "60"
+            - name: LUSTRE_METRICS_LOOKBACK_MINUTES
+              value: "15"
+            - name: LUSTRE_METRICS_INTERVAL
+              value: "PT1M"
+            - name: LUSTRE_METRICS_MAX_WORKERS
+              value: "4"
           readinessProbe:
             httpGet:
               path: /metrics
